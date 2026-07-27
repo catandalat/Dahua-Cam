@@ -1,0 +1,474 @@
+from __future__ import annotations
+
+import asyncio
+import logging
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from sqlalchemy import select
+from sqlalchemy.orm import selectinload
+
+from dahua_client.client import DahuaClient, select_subscribe_codes
+from dahua_client.extract import (
+    extract_detection,
+    extract_flow_sample,
+    extract_jam_event,
+)
+from dahua_client.multipart import MultipartEvent
+from domain.db import SessionLocal, init_db
+from domain.live import live_bus
+from domain.models import (
+    Camera,
+    JamEvent,
+    Lane,
+    TrafficFlowSample,
+)
+from domain.persist import persist_detection, to_relative_snapshot_path
+from domain.session import should_dedupe
+from domain.settings import get_settings
+
+logging.basicConfig(
+    level=get_settings().log_level,
+    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+)
+logger = logging.getLogger("listener")
+
+
+class CameraWorker:
+    def __init__(self, camera_id: uuid.UUID):
+        self.camera_id = camera_id
+        self._task: asyncio.Task | None = None
+        self._stop = asyncio.Event()
+        self._last_plate: str | None = None
+        self._last_group_id: int | None = None
+        self._last_utc: datetime | None = None
+
+    def start(self) -> None:
+        self._stop.clear()
+        self._task = asyncio.create_task(self._run_loop(), name=f"cam-{self.camera_id}")
+
+    async def stop(self) -> None:
+        self._stop.set()
+        if self._task:
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+
+    async def _run_loop(self) -> None:
+        backoff = 2.0
+        while not self._stop.is_set():
+            try:
+                await self._attach_once()
+                backoff = 2.0
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.exception("Camera %s stream error: %s", self.camera_id, exc)
+                await self._set_status("error", str(exc))
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, 60.0)
+
+    async def _load_camera(self) -> Camera | None:
+        async with SessionLocal() as db:
+            return await db.scalar(
+                select(Camera)
+                .options(selectinload(Camera.caps), selectinload(Camera.lane).selectinload(Lane.gate))
+                .where(Camera.id == self.camera_id)
+            )
+
+    async def _set_status(self, status: str, error: str | None = None) -> None:
+        async with SessionLocal() as db:
+            cam = await db.get(Camera, self.camera_id)
+            if not cam:
+                return
+            cam.listener_status = status
+            cam.listener_error = error
+            if status == "connected":
+                cam.last_event_at = datetime.now(timezone.utc)
+            await db.commit()
+
+    async def _attach_once(self) -> None:
+        cam = await self._load_camera()
+        if not cam or not cam.enabled:
+            await asyncio.sleep(5)
+            return
+
+        codes = cam.subscribe_codes
+        if not codes:
+            supported = cam.caps.supported_codes if cam.caps else None
+            codes = select_subscribe_codes(supported, include_p1=True, include_p2=True)
+
+        client = DahuaClient(
+            cam.host,
+            cam.username,
+            cam.password,
+            port=cam.port,
+            use_https=cam.use_https,
+            timeout=30.0,
+        )
+        logger.info("Connecting camera %s (%s) codes=%s", cam.name, cam.host, codes)
+        await self._set_status("connecting")
+
+        # Optional side-stream for vehicles distribution (best-effort)
+        dist_task = asyncio.create_task(self._attach_distribution(cam), name=f"dist-{cam.id}")
+        try:
+            async for event in client.attach_events(codes, heartbeat=5):
+                if self._stop.is_set():
+                    break
+                if event.is_heartbeat:
+                    await self._set_status("connected")
+                    continue
+                await self._set_status("connected")
+                try:
+                    await self._handle_event(cam, event)
+                except Exception:
+                    logger.exception("Failed handling event on %s", cam.name)
+        finally:
+            dist_task.cancel()
+            try:
+                await dist_task
+            except asyncio.CancelledError:
+                pass
+
+    async def _attach_distribution(self, cam: Camera) -> None:
+        """Best-effort Vehicles Distribution attach (10.6.1)."""
+        client = DahuaClient(
+            cam.host,
+            cam.username,
+            cam.password,
+            port=cam.port,
+            use_https=cam.use_https,
+        )
+        while not self._stop.is_set():
+            try:
+                async for event in client.attach_vehicles_distribution(heartbeat=5):
+                    if self._stop.is_set():
+                        return
+                    if event.is_heartbeat:
+                        continue
+                    flow = extract_flow_sample(event)
+                    if not flow:
+                        continue
+                    async with SessionLocal() as db:
+                        db.add(
+                            TrafficFlowSample(
+                                camera_id=cam.id,
+                                site_id=cam.site_id,
+                                event_code=flow.get("event_code") or "VehiclesDistribution",
+                                event_utc=flow.get("event_utc") or datetime.now(timezone.utc),
+                                lane_number=flow.get("lane"),
+                                vehicles_num=flow.get("vehicles_num"),
+                                queue_len=flow.get("queue_len"),
+                                payload=flow.get("payload"),
+                            )
+                        )
+                        await db.commit()
+                    await live_bus.publish(
+                        {
+                            "type": "flow",
+                            "camera_id": str(cam.id),
+                            "vehicles_num": flow.get("vehicles_num"),
+                            "queue_len": flow.get("queue_len"),
+                        }
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.debug("Vehicles distribution unavailable on %s: %s", cam.name, exc)
+                await asyncio.sleep(60)
+    async def _handle_event(self, cam: Camera, event: MultipartEvent) -> None:
+        settings = get_settings()
+        code = event.event_code or ""
+
+        # Jam events
+        jam = extract_jam_event(event)
+        if jam and ("Jam" in str(code) or jam.get("jam_length_pct") is not None):
+            async with SessionLocal() as db:
+                db.add(
+                    JamEvent(
+                        camera_id=cam.id,
+                        site_id=cam.site_id,
+                        event_code=jam.get("event_code"),
+                        event_utc=jam.get("event_utc") or datetime.now(timezone.utc),
+                        lane_number=jam.get("lane"),
+                        jam_length_pct=jam.get("jam_length_pct"),
+                        jam_real_length_m=jam.get("jam_real_length_m"),
+                        payload=jam.get("payload"),
+                    )
+                )
+                db.add(
+                    ViolationEvent(
+                        camera_id=cam.id,
+                        site_id=cam.site_id,
+                        violation_type="jam",
+                        plate_number=None,
+                        event_utc=jam.get("event_utc"),
+                        detail={
+                            "jam_length_pct": jam.get("jam_length_pct"),
+                            "jam_real_length_m": jam.get("jam_real_length_m"),
+                            "lane": jam.get("lane"),
+                        },
+                    )
+                )
+                c = await db.get(Camera, cam.id)
+                if c:
+                    c.last_event_at = datetime.now(timezone.utc)
+                    c.listener_status = "connected"
+                await db.commit()
+            await live_bus.publish(
+                {
+                    "type": "jam",
+                    "camera_id": str(cam.id),
+                    "jam_length_pct": jam.get("jam_length_pct"),
+                    "jam_real_length_m": jam.get("jam_real_length_m"),
+                    "lane": jam.get("lane"),
+                }
+            )
+            if "Jam" in str(code):
+                return
+
+        # Flow / distribution samples (possibly multi-lane)
+        if "Flow" in str(code) or "VehiclesData" in event.data or dig_flow(event):
+            flow = extract_flow_sample(event)
+            if flow:
+                async with SessionLocal() as db:
+                    lanes = flow.get("lanes") or []
+                    if lanes:
+                        for lane_row in lanes:
+                            db.add(
+                                TrafficFlowSample(
+                                    camera_id=cam.id,
+                                    site_id=cam.site_id,
+                                    event_code=flow.get("event_code"),
+                                    event_utc=flow.get("event_utc"),
+                                    lane_number=lane_row.get("lane"),
+                                    vehicles_num=lane_row.get("flow"),
+                                    queue_len=None,
+                                    direction=str(lane_row.get("direction"))
+                                    if lane_row.get("direction") is not None
+                                    else None,
+                                    payload={"lane_row": lane_row, "parent": flow.get("payload")},
+                                )
+                            )
+                    else:
+                        db.add(
+                            TrafficFlowSample(
+                                camera_id=cam.id,
+                                site_id=cam.site_id,
+                                event_code=flow.get("event_code"),
+                                event_utc=flow.get("event_utc"),
+                                lane_number=flow.get("lane"),
+                                vehicles_num=flow.get("vehicles_num"),
+                                queue_len=flow.get("queue_len"),
+                                payload=flow.get("payload"),
+                            )
+                        )
+                    c = await db.get(Camera, cam.id)
+                    if c:
+                        c.last_event_at = datetime.now(timezone.utc)
+                        c.listener_status = "connected"
+                    await db.commit()
+                await live_bus.publish(
+                    {
+                        "type": "flow",
+                        "camera_id": str(cam.id),
+                        **{k: v for k, v in flow.items() if k != "payload"},
+                    }
+                )
+                return
+
+        det = extract_detection(event)
+        # Skip empty noise without plate for non-violation-only events? Keep all with code.
+        if should_dedupe(
+            plate=det.get("plate_number"),
+            group_id=det.get("group_id"),
+            event_utc=det.get("event_utc"),
+            last_plate=self._last_plate,
+            last_group_id=self._last_group_id,
+            last_utc=self._last_utc,
+        ):
+            logger.debug("Dedupe skip plate=%s group=%s", det.get("plate_number"), det.get("group_id"))
+            return
+
+        image_paths = await self._save_images(event, cam.id)
+        source_jpeg = None
+        for img in event.images or []:
+            if img.data and len(img.data) > 1000:
+                source_jpeg = img.data
+                break
+        if not source_jpeg:
+            source_jpeg = await self._fetch_snapshot_bytes(cam)
+
+        gate_id = None
+        lane_id = cam.lane_id
+        if cam.lane and cam.lane.gate:
+            gate_id = cam.lane.gate.id
+        elif lane_id:
+            async with SessionLocal() as db:
+                lane = await db.get(Lane, lane_id)
+                if lane:
+                    gate_id = lane.gate_id
+
+        async with SessionLocal() as db:
+            # reload camera in this session
+            cam_row = await db.get(Camera, cam.id)
+            if not cam_row:
+                return
+            result = await persist_detection(
+                db,
+                cam=cam_row,
+                det=det,
+                raw_payload=event.data,
+                image_paths=image_paths,
+                source_jpeg=source_jpeg,
+                gate_id=gate_id,
+                publish=True,
+            )
+
+        self._last_plate = det.get("plate_number")
+        self._last_group_id = det.get("group_id")
+        self._last_utc = det.get("event_utc")
+        logger.info(
+            "Stored detection cam=%s plate=%s speed=%s status=%s",
+            cam.name,
+            det.get("plate_number"),
+            det.get("speed"),
+            result.get("speed_status"),
+        )
+
+    async def _save_images(self, event: MultipartEvent, camera_id: uuid.UUID) -> dict[str, str]:
+        if not event.images:
+            return {}
+        settings = get_settings()
+        day = datetime.now(timezone.utc).strftime("%Y%m%d")
+        event_id = uuid.uuid4().hex
+        base = Path(settings.snapshot_dir) / day / str(camera_id) / event_id
+        base.mkdir(parents=True, exist_ok=True)
+        paths: dict[str, str] = {}
+        for i, img in enumerate(event.images):
+            if not img.data:
+                continue
+            kind = img.kind if img.kind != "unknown" else f"img{i}"
+            name = f"{kind}.jpg"
+            key = kind
+            if key in paths:
+                key = f"{kind}_{i}"
+                name = f"{key}.jpg"
+            fp = base / name
+            fp.write_bytes(img.data)
+            paths[key] = to_relative_snapshot_path(fp)
+        return paths
+
+    async def _fetch_snapshot_bytes(self, cam: Camera) -> bytes | None:
+        client = DahuaClient(
+            cam.host,
+            cam.username,
+            cam.password,
+            port=cam.port,
+            use_https=cam.use_https,
+            timeout=12.0,
+        )
+        try:
+            return await client.snapshot()
+        except Exception as exc:
+            logger.warning("Snapshot failed cam=%s: %s", cam.name, exc)
+            try:
+                return await client.manual_snap()
+            except Exception as exc2:
+                logger.warning("Manual snap failed cam=%s: %s", cam.name, exc2)
+                return None
+
+
+def dig_flow(event: MultipartEvent) -> bool:
+    return "FlowStates" in event.data or (
+        isinstance(event.first_event, dict) and "FlowStates" in event.first_event
+    )
+
+class ListenerSupervisor:
+    def __init__(self) -> None:
+        self.workers: dict[uuid.UUID, CameraWorker] = {}
+        self._config_fp: dict[uuid.UUID, str] = {}
+        self._stop = asyncio.Event()
+
+    async def run(self) -> None:
+        await init_db()
+        logger.info("Listener supervisor started")
+        while not self._stop.is_set():
+            await self._reconcile()
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=15.0)
+            except asyncio.TimeoutError:
+                pass
+        for w in list(self.workers.values()):
+            await w.stop()
+
+    @staticmethod
+    def _fingerprint(cam: Camera) -> str:
+        return "|".join(
+            [
+                cam.host,
+                str(cam.port),
+                cam.username,
+                cam.password,
+                str(cam.use_https),
+                ",".join(cam.subscribe_codes or []),
+                cam.direction_role,
+                str(cam.updated_at.isoformat() if cam.updated_at else ""),
+            ]
+        )
+
+    async def _reconcile(self) -> None:
+        async with SessionLocal() as db:
+            cams = (
+                await db.scalars(select(Camera).where(Camera.enabled.is_(True)))
+            ).all()
+            wanted = {c.id: self._fingerprint(c) for c in cams}
+
+        # stop removed or config-changed
+        for cid in list(self.workers):
+            if cid not in wanted:
+                logger.info("Stopping worker %s", cid)
+                await self.workers[cid].stop()
+                del self.workers[cid]
+                self._config_fp.pop(cid, None)
+            elif self._config_fp.get(cid) != wanted[cid]:
+                logger.info("Restarting worker %s (config changed)", cid)
+                await self.workers[cid].stop()
+                del self.workers[cid]
+                self._config_fp.pop(cid, None)
+
+        for cid, fp in wanted.items():
+            if cid not in self.workers:
+                logger.info("Starting worker %s", cid)
+                w = CameraWorker(cid)
+                self.workers[cid] = w
+                self._config_fp[cid] = fp
+                w.start()
+
+    def request_stop(self) -> None:
+        self._stop.set()
+
+
+def main() -> None:
+    supervisor = ListenerSupervisor()
+
+    async def _main() -> None:
+        task = asyncio.create_task(supervisor.run())
+        try:
+            await task
+        except asyncio.CancelledError:
+            supervisor.request_stop()
+            await task
+
+    try:
+        asyncio.run(_main())
+    except KeyboardInterrupt:
+        logger.info("Shutting down")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,64 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background:
+    radial-gradient(ellipse at top left, rgba(61, 156, 240, 0.08), transparent 40%),
+    radial-gradient(ellipse at bottom right, rgba(62, 207, 142, 0.05), transparent 35%),
+    #0f1419;
+  font-family: "IBM Plex Sans", sans-serif;
+  -webkit-tap-highlight-color: transparent;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: #243041;
+  border-radius: 4px;
+}
+
+/* Mobile-friendly form controls */
+input,
+select,
+button,
+textarea {
+  font-size: 16px; /* tránh zoom iOS */
+}
+
+@media (min-width: 768px) {
+  input,
+  select,
+  button,
+  textarea {
+    font-size: inherit;
+  }
+}
+
+.safe-pb {
+  padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
+}
+
+/* MapLibre popup — light bubble on dark admin UI */
+.camera-map-popup .maplibregl-popup-content {
+  padding: 10px 12px;
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+}
+.camera-map-popup .maplibregl-popup-close-button {
+  font-size: 16px;
+  padding: 2px 6px;
+  color: #64748b;
+}
+.maplibregl-ctrl-group {
+  border-radius: 8px !important;
+  overflow: hidden;
+}

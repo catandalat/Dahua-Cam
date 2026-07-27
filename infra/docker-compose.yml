@@ -1,0 +1,90 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: anpr
+      POSTGRES_PASSWORD: anpr
+      POSTGRES_DB: anpr
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U anpr -d anpr"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile
+    command: uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
+    env_file:
+      - ../.env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://anpr:anpr@postgres:5432/anpr
+      DATABASE_URL_SYNC: postgresql://anpr:anpr@postgres:5432/anpr
+      REDIS_URL: redis://redis:6379/0
+      SNAPSHOT_DIR: /data/snapshots
+      CORS_ORIGINS: http://localhost:5173,http://localhost:3000,http://web
+    ports:
+      - "8000:8000"
+    volumes:
+      - ..:/app
+      - ../data/snapshots:/data/snapshots
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  listener:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile
+    command: python -m listener.main
+    env_file:
+      - ../.env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://anpr:anpr@postgres:5432/anpr
+      DATABASE_URL_SYNC: postgresql://anpr:anpr@postgres:5432/anpr
+      REDIS_URL: redis://redis:6379/0
+      SNAPSHOT_DIR: /data/snapshots
+    volumes:
+      - ..:/app
+      - ../data/snapshots:/data/snapshots
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ../apps/web
+      dockerfile: Dockerfile
+    ports:
+      - "5173:5173"
+    environment:
+      VITE_API_URL: http://localhost:8000
+      VITE_WS_URL: ws://localhost:8000/ws/live
+    volumes:
+      - ../apps/web:/app
+      - /app/node_modules
+    depends_on:
+      - api
+
+volumes:
+  pgdata:
