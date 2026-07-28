@@ -375,7 +375,7 @@ class DahuaClient:
                     "action": "setConfig",
                     "VideoAnalyseGlobal[0].Scene.Detail.Lanes[0].Type": "Mix",
                     "VideoAnalyseGlobal[0].Scene.Detail.Judgment": "Region",
-                    "VideoAnalyseGlobal[0].Scene.Detail.ConfidenceFilter": "20",
+                    "VideoAnalyseGlobal[0].Scene.Detail.ConfidenceFilter": "35",
                     # VN ANPR: was UN + Chinese PlateHints + wide PlateSize → poor moto OCR
                     "VideoAnalyseGlobal[0].Scene.Detail.CountryArea": "VN",
                     "VideoAnalyseGlobal[0].Scene.Detail.HangingWordPlate": "true",

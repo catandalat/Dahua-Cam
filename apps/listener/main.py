@@ -36,7 +36,7 @@ from domain.overlay_gate import (
     is_passage_event_code,
     overlay_gate_required,
 )
-from domain.plate import is_valid_vn_plate
+from domain.plate import is_valid_vn_plate, plate_confidence_ok
 from domain.persist import persist_detection, to_relative_snapshot_path
 from domain.session import should_dedupe
 from domain.settings import get_settings
@@ -85,6 +85,7 @@ class CameraWorker:
         self._last_plate: str | None = None
         self._last_group_id: int | None = None
         self._last_utc: datetime | None = None
+        self._last_vehicle_class: str | None = None
         # #region agent log
         self._hb_count = 0
         self._event_count = 0
@@ -639,28 +640,78 @@ class CameraWorker:
             # #endregion
             return
 
-        # Reject OCR garbage that is not a plausible VN plate (OO8313, K8760454, …)
+        # Reject OCR garbage / low-confidence clothing OCR.
+        # For motorcycles keep the body event as unlicensed instead of dropping.
+        is_bike_like = bool(non_motor_obj) or str(det.get("vehicle_class") or "").lower() in (
+            "motorcycle",
+            "nonmotor",
+            "bike",
+        )
         if has_plate and not is_valid_vn_plate(str(det.get("plate_number") or "")):
-            logger.info(
-                "Skip invalid plate cam=%s plate=%s code=%s",
-                cam.name,
-                det.get("plate_number"),
-                code_name,
-            )
-            # #region agent log
-            _agent_log(
-                "H9",
-                "listener._handle_event",
-                "invalid_plate_skip",
-                {
-                    "plate": det.get("plate_number"),
-                    "code": code_name,
-                    "pconf": det.get("plate_confidence"),
-                    "pb": det.get("plate_bbox"),
-                },
-            )
-            # #endregion
-            return
+            if is_bike_like and (det.get("vehicle_bbox") or non_motor_obj):
+                logger.info(
+                    "Strip invalid plate cam=%s plate=%s → unlicensed moto",
+                    cam.name,
+                    det.get("plate_number"),
+                )
+                det["plate_number"] = None
+                det["plate_raw"] = None
+                det["unlicensed"] = True
+                has_plate = False
+            else:
+                logger.info(
+                    "Skip invalid plate cam=%s plate=%s code=%s",
+                    cam.name,
+                    det.get("plate_number"),
+                    code_name,
+                )
+                # #region agent log
+                _agent_log(
+                    "H9",
+                    "listener._handle_event",
+                    "invalid_plate_skip",
+                    {
+                        "plate": det.get("plate_number"),
+                        "code": code_name,
+                        "pconf": det.get("plate_confidence"),
+                        "pb": det.get("plate_bbox"),
+                    },
+                )
+                # #endregion
+                return
+        elif has_plate and not plate_confidence_ok(det.get("plate_confidence")):
+            if is_bike_like and (det.get("vehicle_bbox") or non_motor_obj):
+                logger.info(
+                    "Strip low-conf plate cam=%s plate=%s conf=%s → unlicensed moto",
+                    cam.name,
+                    det.get("plate_number"),
+                    det.get("plate_confidence"),
+                )
+                det["plate_number"] = None
+                det["plate_raw"] = None
+                det["unlicensed"] = True
+                has_plate = False
+            else:
+                logger.info(
+                    "Skip low-conf plate cam=%s plate=%s conf=%s",
+                    cam.name,
+                    det.get("plate_number"),
+                    det.get("plate_confidence"),
+                )
+                # #region agent log
+                _agent_log(
+                    "H9",
+                    "listener._handle_event",
+                    "low_conf_plate_skip",
+                    {
+                        "plate": det.get("plate_number"),
+                        "code": code_name,
+                        "pconf": det.get("plate_confidence"),
+                        "pb": det.get("plate_bbox"),
+                    },
+                )
+                # #endregion
+                return
 
         # Gate by drawn lane / stop / region overlays (Dahua 0–8192)
         async with SessionLocal() as db:
@@ -761,6 +812,8 @@ class CameraWorker:
             last_plate=self._last_plate,
             last_group_id=self._last_group_id,
             last_utc=self._last_utc,
+            vehicle_class=str(det.get("vehicle_class") or "") or None,
+            last_vehicle_class=self._last_vehicle_class,
         ):
             logger.info(
                 "Dedupe skip plate=%s group=%s",
@@ -775,6 +828,7 @@ class CameraWorker:
         # DB cooldown: suppress sticky re-fires of the same plate (~12s).
         # Do NOT use 90s — that blocks real exits (matcher needs ≥60s dwell).
         # If the plate is already INSIDE, never cooldown-skip (needed for exit).
+        # Allow car→motorcycle class upgrade within the window.
         plate = det.get("plate_number")
         if plate:
             async with SessionLocal() as db:
@@ -799,20 +853,43 @@ class CameraWorker:
                 else:
                     since = datetime.now(timezone.utc) - timedelta(seconds=12)
                     recent = await db.scalar(
-                        select(VehicleDetection.id)
+                        select(VehicleDetection)
                         .where(
                             VehicleDetection.camera_id == cam.id,
                             VehicleDetection.plate_number == plate,
                             VehicleDetection.created_at >= since,
                         )
+                        .order_by(VehicleDetection.created_at.desc())
                         .limit(1)
                     )
                     if recent:
-                        logger.info("Cooldownoldown skip plate=%s cam=%s (<12s)", plate, cam.name)
+                        recent_class = str(recent.vehicle_class or "").lower()
+                        new_class = str(det.get("vehicle_class") or "").lower()
+                        upgrade = new_class == "motorcycle" and recent_class in (
+                            "car",
+                            "unknown",
+                            "other",
+                            "",
+                        )
+                        if not upgrade:
+                            logger.info("Cooldown skip plate=%s cam=%s (<12s)", plate, cam.name)
+                            # #region agent log
+                            _agent_log(
+                                "H5",
+                                "listener._handle_event",
+                                "cooldown_skip",
+                                {"plate": plate, "window_s": 12},
+                            )
+                            # #endregion
+                            return
                         # #region agent log
-                        _agent_log("H5", "listener._handle_event", "cooldown_skip", {"plate": plate, "window_s": 12})
+                        _agent_log(
+                            "H5",
+                            "listener._handle_event",
+                            "cooldown_bypass_class_upgrade",
+                            {"plate": plate, "from": recent_class, "to": new_class},
+                        )
                         # #endregion
-                        return
 
         image_paths = await self._save_images(event, cam.id)
         source_jpeg = None
@@ -855,6 +932,7 @@ class CameraWorker:
         self._last_plate = det.get("plate_number")
         self._last_group_id = det.get("group_id")
         self._last_utc = det.get("event_utc")
+        self._last_vehicle_class = str(det.get("vehicle_class") or "") or None
         logger.info(
             "Stored detection cam=%s plate=%s class=%s category=%s speed=%s status=%s",
             cam.name,

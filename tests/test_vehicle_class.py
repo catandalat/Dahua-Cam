@@ -77,6 +77,40 @@ def test_vn_eight_char_tall_is_motorcycle():
     )
 
 
+def test_vn_eight_char_near_square_is_motorcycle():
+    # Real gate snap 51K23865 often reports ~0.92–1.18 before perfect frontal
+    pb = [2632, 3328, 2824, 3504]  # h/w ≈ 0.92
+    assert is_vn_motorcycle_plate("51K23865", plate_bbox=pb)
+    assert (
+        classify_vehicle(
+            None,
+            snap_category="Motor",
+            vehicle_size="Light-duty",
+            plate_number="51K23865",
+            plate_bbox=pb,
+            vehicle_bbox=[696, 2496, 2264, 3936],
+        )
+        == "motorcycle"
+    )
+
+
+def test_vn_eight_char_flat_compact_body_is_motorcycle():
+    # Early flat OCR + compact body still motorcycle
+    flat_pb = [1744, 6064, 2336, 6352]  # wide crop
+    compact_vb = [1000, 3216, 2800, 5500]
+    assert (
+        classify_vehicle(
+            None,
+            snap_category="Motor",
+            vehicle_size="Light-duty",
+            plate_number="49C23498",
+            plate_bbox=flat_pb,
+            vehicle_bbox=compact_vb,
+        )
+        == "motorcycle"
+    )
+
+
 def test_colors():
     assert resolve_vehicle_color("Unknown", rgb=[255, 0, 0]) == "Red"
     assert resolve_vehicle_color("Blue") == "Blue"

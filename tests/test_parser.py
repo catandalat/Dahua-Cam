@@ -15,7 +15,7 @@ def test_classify_vehicle():
     from domain.vehicle_class import classify_vehicle
 
     assert classify_vehicle("Car") == "car"
-    assert classify_vehicle("Truck") == "car"
+    assert classify_vehicle("Truck") == "truck"
     assert classify_vehicle("Motorcycle") == "motorcycle"
     assert classify_vehicle("LightMotorcycle") == "motorcycle"
     assert classify_vehicle("Bicycle") == "motorcycle"

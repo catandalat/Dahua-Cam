@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Sequence
 
-from domain.plate import is_vn_motorcycle_plate, plate_bbox_is_two_line
+from domain.plate import is_vn_moto_8_candidate, is_vn_motorcycle_plate, plate_bbox_is_two_line
 
 # Exact / token matches for motor vehicles (ô tô). Avoid bare "motor" — Dahua
 # SnapCategory "Motor" means motor vehicle, not motorcycle.
@@ -105,6 +105,33 @@ def vehicle_bbox_suggests_large(vehicle_bbox: Sequence[float] | None) -> bool:
     return False
 
 
+def vehicle_bbox_suggests_motorcycle(vehicle_bbox: Sequence[float] | None) -> bool:
+    """Compact body typical of motorcycles at this gate (not wide car/truck)."""
+    if not vehicle_bbox or len(vehicle_bbox) < 4:
+        return False
+    if vehicle_bbox_suggests_large(vehicle_bbox):
+        return False
+    try:
+        x1, y1, x2, y2 = (
+            float(vehicle_bbox[0]),
+            float(vehicle_bbox[1]),
+            float(vehicle_bbox[2]),
+            float(vehicle_bbox[3]),
+        )
+    except (TypeError, ValueError):
+        return False
+    w = abs(x2 - x1)
+    h = abs(y2 - y1)
+    if w < 80 or h < 80:
+        return False
+    # Motos at Cổng MobiFone often span < ~2800px wide; cars fill much more
+    if w <= 2400:
+        return True
+    if w <= 3000 and h >= w * 0.85:
+        return True
+    return False
+
+
 def classify_vehicle(
     category: str | None,
     *,
@@ -122,7 +149,7 @@ def classify_vehicle(
 
     Dahua on this site usually sends Category=Unknown and VehicleSize=Light-duty
     for everything. Reliable signals are: NonMotor event/object, VN plate shape
-    (2-line bbox / 9-char number), and Medium/Heavy duty → truck.
+    (2-line bbox / 9-char number), compact body + 8-char plate, Medium/Heavy → truck.
     """
     code = (event_code or "").lower().replace("-", "").replace("_", "")
     if "nonmotor" in code:
@@ -158,10 +185,14 @@ def classify_vehicle(
     moto_plate = vn_plate_suggests_motorcycle(plate_number, plate_bbox)
     tall_plate = plate_bbox_suggests_motorcycle(plate_bbox)
     large_body = vehicle_bbox_suggests_large(vehicle_bbox)
+    compact_body = vehicle_bbox_suggests_motorcycle(vehicle_bbox)
 
     if moto_plate:
         return "motorcycle"
     if tall_plate and not large_body:
+        return "motorcycle"
+    # 8-char single-letter + compact body (early flat OCR before tall crop)
+    if is_vn_moto_8_candidate(plate_number) and compact_body and not large_body:
         return "motorcycle"
     # Tall plate on a wide large body → treat as car/truck plate crop error
     if tall_plate and large_body:

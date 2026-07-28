@@ -50,17 +50,29 @@ def should_dedupe(
     last_group_id: int | None,
     last_utc: datetime | None,
     window_seconds: float = 12.0,
+    vehicle_class: str | None = None,
+    last_vehicle_class: str | None = None,
 ) -> bool:
     """Suppress near-duplicate fires for same plate/group (parked / sticky ANPR).
 
     Window is short (~12s) so a real exit pass after ≥60s dwell is not blocked.
     Same GroupID always dedupes (multi-part snap of one crossing).
+
+    Exception: allow car → motorcycle upgrade within the window so an early flat
+    OCR classified as car does not block the better tall-plate moto snap.
     """
     np = normalize_plate(plate)
     lp = normalize_plate(last_plate)
     if not np or not lp or np != lp:
         return False
+    vc = (vehicle_class or "").lower()
+    lvc = (last_vehicle_class or "").lower()
+    if vc == "motorcycle" and lvc in ("car", "unknown", "other", ""):
+        return False
     if group_id is not None and last_group_id is not None and group_id == last_group_id:
+        # Still allow class upgrade across multi-part snaps
+        if vc == "motorcycle" and lvc in ("car", "unknown", "other", ""):
+            return False
         return True
     if event_utc and last_utc:
         eu = event_utc if event_utc.tzinfo else event_utc.replace(tzinfo=timezone.utc)

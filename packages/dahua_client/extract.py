@@ -96,13 +96,13 @@ def extract_detection(event: MultipartEvent) -> dict[str, Any]:
         "TrafficCar.PlateNumber",
         "Object.PlateNumber",
         "PlateNumber",
-        "Object.Text",
         "TrafficCar.PlateNo",
         "Plate.PlateNumber",
         "NonMotor.PlateNumber",
         "NonMotor.Object.PlateNumber",
         "NonMotor.Plate.PlateNumber",
-        "NonMotor.Text",
+        # Do NOT use Object.Text / NonMotor.Text — those are brand/model strings
+        # and cause clothing/billboard false plates.
     )
     plate_color = dig(
         ev,

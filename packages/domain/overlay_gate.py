@@ -227,6 +227,15 @@ def _gate_probe_points(
                 pts.append(c)
             if b and b != c:
                 pts.append(b)
+            # Moto: also accept when body is in the region but plate crop is
+            # slightly outside (common on approach / angled snaps).
+            if is_bike and vb is not None:
+                vc = bbox_center(vb)
+                vb_b = bbox_bottom_center(vb)
+                if vc:
+                    pts.append(vc)
+                if vb_b and vb_b != vc:
+                    pts.append(vb_b)
             return pts
         if is_bike and vb is not None:
             pts = []
@@ -304,7 +313,7 @@ def detection_hits_overlay(
             line_threshold = APPROACH_MOTO_LINE_THRESHOLD
         elif (
             aspect is not None
-            and aspect >= 1.05
+            and aspect >= 0.90
             and plate_number
             and is_valid_vn_plate(plate_number)
             and plen >= 8

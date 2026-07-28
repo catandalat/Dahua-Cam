@@ -11,7 +11,7 @@ from domain.session import resolve_passage_direction
 
 # Min time between entry and exit on a single-camera gate (seconds).
 # Keep below anti-spam cooldown so a real return pass can close the session.
-_MIN_DWELL_SEC = 20.0
+_MIN_DWELL_SEC = 60.0
 
 
 async def _find_inside(
