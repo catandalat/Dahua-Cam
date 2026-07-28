@@ -174,22 +174,20 @@ def detection_hits_overlay(
         vc = (vehicle_class or "").lower()
         aspect = _plate_aspect_hw(plate_bbox)
         plen = len(normalize_plate(plate_number) or "")
-        if plate_number and is_vn_motorcycle_plate(plate_number):
-            # 9-char moto (59B123456) — inbound ManualSnap often fires early
+        if plate_number and is_vn_motorcycle_plate(plate_number, plate_bbox=plate_bbox):
+            # VN moto OCR (9-char or tall 8-char) — often ManualSnap before the line
             line_threshold = APPROACH_MOTO_LINE_THRESHOLD
         elif (
             aspect is not None
-            and aspect >= 1.15
+            and aspect >= 1.05
             and plate_number
             and is_valid_vn_plate(plate_number)
             and plen >= 8
         ):
-            # Tall 8+ char plate — common real moto OCR while approaching.
-            # 7-char tall fakes (57R6409 clothing) stay strict below.
             line_threshold = APPROACH_MOTO_LINE_THRESHOLD
         elif aspect is not None and aspect < 1.0:
             line_threshold = APPROACH_CAR_LINE_THRESHOLD
-        elif vc in ("motorcycle", "nonmotor", "bike") or (aspect is not None and aspect >= 1.15):
+        elif vc in ("motorcycle", "nonmotor", "bike") or (aspect is not None and aspect >= 1.05):
             # Tall plate without moto number shape — keep strict (shirt OCR ~1418)
             line_threshold = MOTORCYCLE_LINE_THRESHOLD
         elif not plate_bbox:

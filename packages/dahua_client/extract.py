@@ -236,6 +236,7 @@ def extract_detection(event: MultipartEvent) -> dict[str, Any]:
         has_non_motor=bool(non_motor),
         plate_number=plate_norm,
         plate_bbox=plate_bbox_vals,
+        plate_type=clean_camera_attr(plate_type),
     )
     if vehicle_class == "motorcycle":
         category_s = category_s or "Motorcycle"

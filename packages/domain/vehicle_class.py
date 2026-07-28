@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-import re
 from typing import Sequence
+
+from domain.plate import is_vn_motorcycle_plate, plate_bbox_is_two_line
 
 # Exact / token matches for motor vehicles (ô tô). Avoid bare "motor" — Dahua
 # SnapCategory "Motor" means motor vehicle, not motorcycle.
@@ -65,40 +66,17 @@ _LIST_STATUS_TYPES = {
     "unknown",
 }
 
-# VN motorcycle: 59B123456 (province + letter + series digit + 5 digits) = 9 chars
-_VN_MOTO_PLATE = re.compile(r"^\d{2}[A-Z]\d{6}$")
-
 
 def _norm_key(raw: str) -> str:
     return raw.lower().replace(" ", "").replace("_", "").replace("-", "")
 
 
 def plate_bbox_suggests_motorcycle(plate_bbox: Sequence[float] | None) -> bool:
-    """Two-line VN motorcycle plates are taller than wide; car plates are wider."""
-    if not plate_bbox or len(plate_bbox) < 4:
-        return False
-    try:
-        x1, y1, x2, y2 = (
-            float(plate_bbox[0]),
-            float(plate_bbox[1]),
-            float(plate_bbox[2]),
-            float(plate_bbox[3]),
-        )
-    except (TypeError, ValueError):
-        return False
-    w = abs(x2 - x1)
-    h = abs(y2 - y1)
-    if w < 20 or h < 20:
-        return False
-    return (h / w) >= 1.15
+    return plate_bbox_is_two_line(plate_bbox)
 
 
-def vn_plate_suggests_motorcycle(plate: str | None) -> bool:
-    """Heuristic for Vietnamese motorcycle plate numbers (e.g. 59B123456)."""
-    if not plate:
-        return False
-    p = re.sub(r"[^A-Z0-9]", "", plate.upper())
-    return bool(_VN_MOTO_PLATE.match(p))
+def vn_plate_suggests_motorcycle(plate: str | None, plate_bbox: Sequence[float] | None = None) -> bool:
+    return is_vn_motorcycle_plate(plate, plate_bbox=plate_bbox)
 
 
 def classify_vehicle(
@@ -111,6 +89,7 @@ def classify_vehicle(
     has_non_motor: bool = False,
     plate_number: str | None = None,
     plate_bbox: Sequence[float] | None = None,
+    plate_type: str | None = None,
 ) -> str:
     """Return vehicle_class: car | motorcycle | other | unknown."""
     code = (event_code or "").lower().replace("-", "").replace("_", "")
@@ -128,9 +107,14 @@ def classify_vehicle(
     if ot in ("nonmotor", "motorcycle", "bike"):
         return "motorcycle"
 
-    # Camera often mis-tags motorcycles as Light-duty / SnapCategory=Motor.
-    # Prefer plate geometry + VN plate shape over those weak labels.
-    if plate_bbox_suggests_motorcycle(plate_bbox) or vn_plate_suggests_motorcycle(plate_number):
+    pt = _norm_key(plate_type or "")
+    if pt and ("motorcycle" in pt or "nonmotor" in pt or pt in ("bike", "twowheel")):
+        return "motorcycle"
+
+    # Prefer Dahua OCR + VN plate geometry over weak Light-duty / SnapCategory=Motor.
+    if plate_bbox_suggests_motorcycle(plate_bbox) or vn_plate_suggests_motorcycle(
+        plate_number, plate_bbox
+    ):
         return "motorcycle"
 
     if snap in ("motor", "motorvehicle"):

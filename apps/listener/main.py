@@ -538,8 +538,8 @@ class CameraWorker:
                 _agent_log("H3", "listener._handle_event", "position_empty_skip", {"code": code_name})
                 # #endregion
                 return
-            # ManualSnap without plate is usually UI/forced noise — require plate
-            # OR motorcycle/NonMotor body near the gate line.
+            # ManualSnap without plate: keep bike/NonMotor body; for other bodies
+            # defer to overlay (near-line unlicensed — inbound moto often has no OCR).
             if code_name == "TrafficManualSnap" and not det.get("plate_number"):
                 is_bike = str(det.get("vehicle_class") or "").lower() in (
                     "motorcycle",
@@ -550,25 +550,16 @@ class CameraWorker:
                     if isinstance(event.first_event, dict)
                     else False
                 )
-                if not is_bike:
-                    logger.info("Skip ManualSnap no-plate car cam=%s", cam.name)
+                if is_bike:
                     # #region agent log
                     _agent_log(
-                        "H3",
+                        "H10",
                         "listener._handle_event",
-                        "manual_snap_noise_skip",
+                        "manual_snap_bike_body",
                         {"vb": det.get("vehicle_bbox"), "vclass": det.get("vehicle_class")},
                     )
                     # #endregion
-                    return
-                # #region agent log
-                _agent_log(
-                    "H10",
-                    "listener._handle_event",
-                    "manual_snap_bike_body",
-                    {"vb": det.get("vehicle_bbox"), "vclass": det.get("vehicle_class")},
-                )
-                # #endregion
+                # else: do not return — overlay NOPLATE threshold drops mid-frame noise
             # #region agent log
             _agent_log(
                 "H6",
@@ -648,43 +639,6 @@ class CameraWorker:
             # #endregion
             return
 
-        # Clothing false-OCR on this camera is almost always Yellow + ManualSnap
-        # while still far above the lane (e.g. 57R6409). Real moto plates are not yellow.
-        plate_color = str(det.get("plate_color") or "").strip().lower()
-        if (
-            code_name == "TrafficManualSnap"
-            and has_plate
-            and plate_color == "yellow"
-            and str(det.get("vehicle_class") or "").lower() in ("motorcycle", "car", "unknown", "")
-        ):
-            pb = det.get("plate_bbox")
-            # Only apply when plate is clearly on the approach side / mid-frame
-            if isinstance(pb, (list, tuple)) and len(pb) >= 4:
-                try:
-                    mid_y = (float(pb[1]) + float(pb[3])) / 2.0
-                except (TypeError, ValueError):
-                    mid_y = 9999.0
-                if mid_y < 4200:
-                    logger.info(
-                        "Skip yellow mid-frame ManualSnap cam=%s plate=%s",
-                        cam.name,
-                        det.get("plate_number"),
-                    )
-                    # #region agent log
-                    _agent_log(
-                        "H10",
-                        "listener._handle_event",
-                        "yellow_midframe_skip",
-                        {
-                            "plate": det.get("plate_number"),
-                            "pb": pb,
-                            "pcolor": det.get("plate_color"),
-                            "vclass": det.get("vehicle_class"),
-                        },
-                    )
-                    # #endregion
-                    return
-
         # Gate by drawn lane / stop / region overlays (Dahua 0–8192)
         async with SessionLocal() as db:
             overlay = await db.scalar(
@@ -722,8 +676,15 @@ class CameraWorker:
                                 _my = (float(_pb[1]) + float(_pb[3])) / 2.0
                                 _ov_side = _point_side_of_line(_mx, _my, _ax, _ay, _bx, _by)
                             break
+                _moto_plate = bool(
+                    det.get("plate_number")
+                    and is_vn_motorcycle_plate(
+                        str(det.get("plate_number") or ""),
+                        plate_bbox=det.get("plate_bbox"),
+                    )
+                )
             except Exception:
-                is_vn_motorcycle_plate = lambda *_a, **_k: False  # type: ignore
+                _moto_plate = False
             _agent_log(
                 "H10",
                 "listener._handle_event",
@@ -740,10 +701,8 @@ class CameraWorker:
                     "rconf": det.get("recognise_conf"),
                     "vclass": det.get("vehicle_class"),
                     "vdir": det.get("vehicle_direction"),
-                    "moto_plate": bool(
-                        det.get("plate_number")
-                        and is_vn_motorcycle_plate(str(det.get("plate_number") or ""))
-                    ),
+                    "moto_plate": _moto_plate,
+                    "pcolor": det.get("plate_color"),
                 },
             )
             # #endregion

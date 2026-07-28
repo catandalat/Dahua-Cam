@@ -1,4 +1,5 @@
 from domain.vehicle_class import classify_vehicle, clean_camera_attr
+from domain.plate import is_vn_motorcycle_plate, is_valid_vn_plate
 
 
 def test_clean_unknown():
@@ -36,14 +37,49 @@ def test_tall_plate_bbox_overrides_light_duty_as_motorcycle():
 
 
 def test_vn_nine_char_plate_is_motorcycle():
+    # Camera evidence: 41D074011
     assert (
         classify_vehicle(
             None,
             snap_category="Motor",
             vehicle_size="Light-duty",
-            plate_number="59B123456",
+            plate_number="41D074011",
         )
         == "motorcycle"
+    )
+    assert is_vn_motorcycle_plate("41D074011")
+    assert is_vn_motorcycle_plate("59B123456")
+
+
+def test_vn_eight_char_tall_is_motorcycle():
+    # Camera evidence: 49C04891 exit Tail — tall 2-line bbox
+    pb = [2072, 5424, 2360, 5840]
+    assert is_vn_motorcycle_plate("49C04891", plate_bbox=pb)
+    assert (
+        classify_vehicle(
+            None,
+            snap_category="Motor",
+            vehicle_size="Light-duty",
+            plate_number="49C04891",
+            plate_bbox=pb,
+        )
+        == "motorcycle"
+    )
+
+
+def test_vn_eight_char_wide_stays_car_without_tall_bbox():
+    # Same number on entry with wide crop — treat as car unless bbox says moto
+    pb = [4080, 4384, 4416, 4576]
+    assert not is_vn_motorcycle_plate("49C04891", plate_bbox=pb)
+    assert (
+        classify_vehicle(
+            None,
+            snap_category="Motor",
+            vehicle_size="Light-duty",
+            plate_number="49C04891",
+            plate_bbox=pb,
+        )
+        == "car"
     )
 
 
@@ -59,6 +95,12 @@ def test_wide_car_plate_stays_car():
         )
         == "car"
     )
+
+
+def test_invalid_plates_rejected():
+    assert not is_valid_vn_plate("OO8313")
+    assert not is_valid_vn_plate("K8760454")
+    assert is_valid_vn_plate("49A42576")
 
 
 def test_snap_nonmotor_is_motorcycle():
