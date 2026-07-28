@@ -349,8 +349,11 @@ class CameraWorker:
             or non_motor_obj.get("BoundingBox")
         )
         has_plate = bool(det.get("plate_number"))
-        # Unlicensed ghosts (forced snap / empty scene) — require plate unless real passage code
-        if not has_plate and det.get("unlicensed"):
+        is_nonmotor = bool(non_motor_obj) or str(det.get("vehicle_class") or "") == "motorcycle" or str(
+            det.get("snap_category") or ""
+        ).lower() in ("nonmotor", "motorcycle")
+        # Unlicensed ghosts — require plate, except NonMotor (xe máy often unread plate)
+        if not has_plate and det.get("unlicensed") and not is_nonmotor:
             logger.debug("Skip unlicensed without plate cam=%s code=%s", cam.name, code_name)
             return
         if not has_plate and not has_vehicle_obj:
@@ -361,7 +364,8 @@ class CameraWorker:
             )
             return
         # Prefer junction/measurement; other codes only if plate was actually read
-        if not is_passage_event_code(code_name) and not has_plate:
+        # (NonMotor violation codes allowed via is_passage_event_code)
+        if not is_passage_event_code(code_name) and not has_plate and not is_nonmotor:
             logger.debug("Skip non-passage without plate cam=%s code=%s", cam.name, code_name)
             return
 
@@ -379,6 +383,7 @@ class CameraWorker:
                 shapes,
                 vehicle_bbox=det.get("vehicle_bbox"),
                 plate_bbox=det.get("plate_bbox"),
+                vehicle_class=str(det.get("vehicle_class") or "") or None,
             )
             if not hit:
                 logger.info(

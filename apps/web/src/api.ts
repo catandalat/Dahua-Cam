@@ -301,6 +301,7 @@ export type Detection = {
   event_code?: string;
   event_utc?: string;
   plate_number?: string;
+  plate_color?: string;
   vehicle_brand?: string;
   vehicle_model?: string;
   vehicle_category?: string;

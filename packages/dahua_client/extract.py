@@ -8,7 +8,7 @@ from dahua_client.kv_parser import dig
 from dahua_client.multipart import MultipartEvent
 from domain.plate import normalize_plate
 from domain.schemas import EVENT_TO_VIOLATION, ViolationType
-from domain.vehicle_class import classify_vehicle
+from domain.vehicle_class import classify_vehicle, clean_camera_attr
 
 _MAX_CLOCK_SKEW = timedelta(hours=36)
 _MAX_FUTURE_SKEW = timedelta(minutes=2)
@@ -124,38 +124,49 @@ def extract_detection(event: MultipartEvent) -> dict[str, Any]:
     if not isinstance(non_motor, dict):
         non_motor = {}
 
-    brand = dig(ev, "Vehicle.Text", "TrafficCar.VehicleSign", "Text") or vehicle.get("Text")
-    model = dig(ev, "Vehicle.SubText", "SubText") or vehicle.get("SubText")
-    category = (
-        dig(
-            ev,
-            "Vehicle.Category",
-            "Vehicle.ObjectType",
-            "TrafficCar.Category",
-            "TrafficCar.VehicleType",
-            "TrafficCar.CarType",
-            "Vehicle.VehicleType",
-            "Vehicle.Type",
-            "Category",
-            "NonMotor.Category",
-            "NonMotor.ObjectType",
-            "Object.Category",
-            "Object.ObjectType",
-            "VehicleType",
-            "ObjectType",
-            "TrafficCar.VehicleSize",
-        )
-        or vehicle.get("Category")
-        or vehicle.get("ObjectType")
-        or vehicle.get("VehicleType")
-        or vehicle.get("Type")
-        or non_motor.get("Category")
-        or non_motor.get("ObjectType")
+    brand = clean_camera_attr(
+        dig(ev, "Vehicle.Text", "TrafficCar.VehicleSign", "Text") or vehicle.get("Text")
     )
-    color = dig(ev, "Vehicle.VehicleColor", "TrafficCar.VehicleColor", "VehicleColor", "NonMotor.Color") or vehicle.get(
-        "VehicleColor"
+    model = clean_camera_attr(dig(ev, "Vehicle.SubText", "SubText") or vehicle.get("SubText"))
+
+    # Prefer real type hints; skip allow-list CarType (NormalCar) and literal Unknown
+    snap_category = clean_camera_attr(dig(ev, "CommInfo.SnapCategory", "SnapCategory"))
+    vehicle_size = clean_camera_attr(dig(ev, "TrafficCar.VehicleSize", "VehicleSize"))
+    object_type = clean_camera_attr(
+        dig(ev, "Vehicle.ObjectType", "NonMotor.ObjectType") or vehicle.get("ObjectType")
+    )
+    category = None
+    for path in (
+        "Vehicle.Category",
+        "TrafficCar.Category",
+        "TrafficCar.VehicleType",
+        "Vehicle.VehicleType",
+        "NonMotor.Category",
+        "NonMotor.ObjectType",
+        "Category",
+    ):
+        category = clean_camera_attr(dig(ev, path))
+        if category:
+            break
+    # CarType is list status (NormalCar/TrustCar) — only use if it looks like a body type
+    car_type = clean_camera_attr(dig(ev, "TrafficCar.CarType", "CarType"))
+    if car_type and car_type.lower().replace(" ", "") not in (
+        "normalcar",
+        "trustcar",
+        "suspiciouscar",
+    ):
+        category = category or car_type
+    if not category and vehicle_size:
+        category = vehicle_size
+    if not category and snap_category:
+        category = "MotorVehicle" if snap_category.lower() == "motor" else snap_category
+
+    color = clean_camera_attr(
+        dig(ev, "Vehicle.VehicleColor", "TrafficCar.VehicleColor", "VehicleColor", "NonMotor.Color")
+        or vehicle.get("VehicleColor")
     )
     color_rgb = dig(ev, "Vehicle.VehicleColorRGB", "VehicleColorRGB")
+    plate_color = clean_camera_attr(plate_color)
     speed = dig(
         ev,
         "Speed",
@@ -201,22 +212,18 @@ def extract_detection(event: MultipartEvent) -> dict[str, Any]:
 
     speed_limit_norm = normalize_speed_limit(speed_limit)
 
-    category_s = str(category) if category is not None else None
-    # Dahua sometimes sends numeric CarType — treat as opaque but still classify via ObjectType.
-    if category_s is not None and category_s.isdigit():
-        category_s = dig(ev, "Vehicle.ObjectType", "Vehicle.Category", "Object.ObjectType") or category_s
-        category_s = str(category_s) if category_s is not None else None
-
-    vehicle_class = classify_vehicle(category_s, event_code=str(code) if code else None)
-    # If camera didn't send Category but NonMotor object exists, treat as motorcycle.
-    if vehicle_class == "unknown" and non_motor:
-        vehicle_class = "motorcycle"
-    if vehicle_class == "unknown" and str(vehicle.get("ObjectType") or "").lower() == "vehicle":
-        vehicle_class = "car"
-    # Keep a human-readable category even when plate is missing.
-    if (not category_s or str(category_s).lower() in ("unknown", "null")) and vehicle_class != "unknown":
+    category_s = clean_camera_attr(category)
+    vehicle_class = classify_vehicle(
+        category_s,
+        event_code=str(code) if code else None,
+        snap_category=snap_category,
+        vehicle_size=vehicle_size,
+        object_type=object_type,
+        has_non_motor=bool(non_motor),
+    )
+    if (not category_s) and vehicle_class != "unknown":
         category_s = {
-            "car": "Car",
+            "car": vehicle_size or "Car",
             "motorcycle": "Motorcycle",
             "other": "Other",
         }.get(vehicle_class, category_s)
@@ -227,17 +234,19 @@ def extract_detection(event: MultipartEvent) -> dict[str, Any]:
         "plate_raw": str(plate) if plate is not None else None,
         "plate_number": plate_norm,
         "plate_color": plate_color,
-        "plate_type": plate_type,
+        "plate_type": clean_camera_attr(plate_type),
         "front_plate_number": normalize_plate(str(front_plate)) if front_plate else None,
         "back_plate_number": normalize_plate(str(back_plate)) if back_plate else None,
-        "front_plate_color": front_plate_color,
-        "back_plate_color": back_plate_color,
+        "front_plate_color": clean_camera_attr(front_plate_color),
+        "back_plate_color": clean_camera_attr(back_plate_color),
         "vehicle_brand": brand,
         "vehicle_model": model,
         "vehicle_category": category_s,
         "vehicle_class": vehicle_class,
         "vehicle_color": color,
         "vehicle_color_rgb": color_rgb,
+        "vehicle_size": vehicle_size,
+        "snap_category": snap_category,
         "speed": normalize_measured_speed(speed),
         "lane": _as_int(lane),
         "physical_lane": _as_int(physical_lane),

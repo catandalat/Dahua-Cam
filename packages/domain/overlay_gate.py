@@ -9,8 +9,9 @@ from typing import Any, Sequence
 Point = tuple[float, float]
 BBox = Sequence[float]  # [x1, y1, x2, y2]
 
-# ~15% of frame height — vehicles often trigger slightly before/after the painted line
-DEFAULT_LINE_THRESHOLD = 1200.0
+# ~20% of frame — motorcycles are small and often snap slightly off the painted line
+DEFAULT_LINE_THRESHOLD = 1600.0
+MOTORCYCLE_LINE_THRESHOLD = 2200.0
 
 
 def bbox_center(bbox: BBox | None) -> Point | None:
@@ -94,20 +95,27 @@ def detection_hits_overlay(
     *,
     vehicle_bbox: BBox | None = None,
     plate_bbox: BBox | None = None,
-    line_threshold: float = DEFAULT_LINE_THRESHOLD,
+    line_threshold: float | None = None,
+    vehicle_class: str | None = None,
 ) -> bool:
     """
     Return True if detection should be kept given overlay shapes.
 
     Rules (when overlay has shapes):
-    - region: keep if vehicle/plate center (or any sample point) is inside any region
-    - lane_line / stop_line: keep if vehicle or plate bbox is within `line_threshold`
-      of any line segment (uses corners + bottom-center — not only center)
-    - if both region and lines exist: pass if either rule matches
-    - if no usable shapes: pass (do not block cameras without drawings)
+    - region: keep if vehicle/plate sample point is inside any region
+    - lane_line / stop_line: keep if vehicle or plate bbox is within threshold
+      of any line segment (corners + bottom-center)
+    - motorcycles use a wider threshold (small bbox / late plate read)
     """
     if not shapes:
         return True
+
+    if line_threshold is None:
+        line_threshold = (
+            MOTORCYCLE_LINE_THRESHOLD
+            if (vehicle_class or "").lower() in ("motorcycle", "nonmotor", "bike")
+            else DEFAULT_LINE_THRESHOLD
+        )
 
     regions = [s for s in shapes if s.get("type") == "region" and len(_shape_points(s)) >= 3]
     lines = [
@@ -168,6 +176,10 @@ PASSAGE_EVENT_CODES = {
     "TrafficCarMeasurement",
     "TrafficTollGate",
     "TrafficGate",
+    "TrafficNonMotorInMotorRoute",
+    "TrafficNonMotorHoldUmbrella",
+    "TrafficNonMotorOverload",
+    "TrafficNonMotorWithoutSafehat",
 }
 
 

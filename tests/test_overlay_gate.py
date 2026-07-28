@@ -33,6 +33,15 @@ def test_motorcycle_approaching_line_accepts():
         [LANE],
         vehicle_bbox=[2664, 2808, 4776, 4552],
         plate_bbox=[3520, 4328, 3664, 4520],
+        vehicle_class="motorcycle",
+    )
+
+
+def test_motorcycle_midframe_accepts_with_wide_threshold():
+    assert detection_hits_overlay(
+        [LANE],
+        vehicle_bbox=[3000, 3500, 3800, 4300],
+        vehicle_class="motorcycle",
     )
 
 

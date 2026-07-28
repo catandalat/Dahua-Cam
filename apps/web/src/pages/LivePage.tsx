@@ -746,7 +746,23 @@ export default function LivePage() {
                         text={CLASS_LABEL[d.vehicle_class] || d.vehicle_class}
                       />
                     )}
-                    {d.vehicle_color && <Badge color="ok" text={String(d.vehicle_color)} />}
+                    {d.vehicle_color &&
+                      String(d.vehicle_color).toLowerCase() !== "unknown" && (
+                        <Badge color="ok" text={String(d.vehicle_color)} />
+                      )}
+                    {!d.vehicle_color &&
+                      d.plate_color &&
+                      String(d.plate_color).toLowerCase() !== "unknown" && (
+                        <Badge color="ok" text={`Biển ${d.plate_color}`} />
+                      )}
+                    {!d.vehicle_color &&
+                      !d.plate_color &&
+                      d.meta &&
+                      typeof d.meta.plate_color === "string" &&
+                      d.meta.plate_color &&
+                      String(d.meta.plate_color).toLowerCase() !== "unknown" && (
+                        <Badge color="ok" text={`Biển ${d.meta.plate_color}`} />
+                      )}
                     {d.passage_direction && (
                       <Badge
                         color={d.passage_direction === "entry" ? "ok" : "accent"}
