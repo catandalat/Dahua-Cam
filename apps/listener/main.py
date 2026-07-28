@@ -303,6 +303,11 @@ class CameraWorker:
             or non_motor_obj.get("ObjectID")
             or non_motor_obj.get("BoundingBox")
         )
+        code_name = str(det.get("event_code") or "")
+        # TrafficManualSnap from Monitor auto-refresh is very noisy — only keep when plate is read
+        if code_name == "TrafficManualSnap" and not det.get("plate_number"):
+            logger.debug("Skip ManualSnap without plate cam=%s", cam.name)
+            return
         if not det.get("plate_number") and not has_vehicle_obj:
             logger.debug(
                 "Skip empty event cam=%s code=%s",
