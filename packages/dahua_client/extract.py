@@ -86,94 +86,343 @@ def _bbox(ev: dict[str, Any], *paths: str) -> list[int] | None:
     return None
 
 
+def _as_int(val: Any) -> int | None:
+    if val is None:
+        return None
+    try:
+        return int(val)
+    except (TypeError, ValueError):
+        return None
+
+
+def _as_float(val: Any) -> float | None:
+    if val is None:
+        return None
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return None
+
+
+def _event_bodies(event: MultipartEvent) -> list[dict[str, Any]]:
+    """All Events[] entries, or the single Code=…;data={…} body."""
+    if isinstance(event.data, dict):
+        events = event.data.get("Events")
+        if isinstance(events, list) and events:
+            bodies = [e for e in events if isinstance(e, dict)]
+            if bodies:
+                return bodies
+    fe = event.first_event
+    return [fe] if isinstance(fe, dict) and fe else []
+
+
+def _has_motor_vehicle(ev: dict[str, Any]) -> bool:
+    vehicle = ev.get("Vehicle")
+    if isinstance(vehicle, dict) and any(
+        vehicle.get(k) for k in ("BoundingBox", "ObjectID", "Category", "VehicleType", "Text")
+    ):
+        return True
+    tc = ev.get("TrafficCar")
+    if isinstance(tc, dict) and any(
+        tc.get(k) for k in ("PlateNumber", "VehicleSize", "BoundingBox", "Category", "VehicleType")
+    ):
+        return True
+    obj = ev.get("Object")
+    if isinstance(obj, dict) and obj.get("PlateNumber"):
+        return True
+    snap = dig(ev, "CommInfo.SnapCategory", "SnapCategory")
+    if snap and str(snap).lower() in ("motor", "motorvehicle"):
+        return True
+    return False
+
+
+def _has_non_motor(ev: dict[str, Any]) -> bool:
+    nm = ev.get("NonMotor")
+    if not isinstance(nm, dict) or not nm:
+        return False
+    # Empty placeholder {} should not count; require a real signal
+    return any(
+        nm.get(k)
+        for k in (
+            "BoundingBox",
+            "ObjectID",
+            "Category",
+            "ObjectType",
+            "PlateNumber",
+            "Color",
+            "Object",
+            "Plate",
+        )
+    )
+
+
+def _detection_has_signal(det: dict[str, Any]) -> bool:
+    return bool(
+        det.get("plate_number")
+        or det.get("vehicle_bbox")
+        or det.get("plate_bbox")
+        or det.get("unlicensed")
+    )
+
+
 def extract_detection(event: MultipartEvent) -> dict[str, Any]:
-    """Normalize a multipart traffic event into a detection dict."""
-    ev = event.first_event
+    """Normalize a multipart traffic event into a detection dict (primary object)."""
+    return extract_detection_from_body(event, event.first_event, focus="auto")
+
+
+def extract_detections(event: MultipartEvent) -> list[dict[str, Any]]:
+    """Extract one detection per vehicle when car + motorcycle share a frame.
+
+    Dahua often packs Vehicle/TrafficCar and NonMotor into the same Events[0].
+    The legacy single extract preferred the car plate and dropped the moto —
+    this splits them into separate detections (moto first for callers that sort).
+    Also walks Events[1..] when the firmware emits multiple event rows.
+    """
+    out: list[dict[str, Any]] = []
+    seen: set[tuple[str | None, str | None]] = set()
+
+    def _add(det: dict[str, Any]) -> None:
+        if not _detection_has_signal(det):
+            return
+        key = (det.get("plate_number"), str(det.get("vehicle_class") or ""))
+        # Allow multiple unlicensed bodies (plate None) with different class
+        if det.get("plate_number") and key in seen:
+            return
+        if det.get("plate_number"):
+            seen.add(key)
+        out.append(det)
+
+    for ev in _event_bodies(event):
+        motor = _has_motor_vehicle(ev)
+        non = _has_non_motor(ev)
+        if motor and non:
+            _add(extract_detection_from_body(event, ev, focus="motor"))
+            _add(extract_detection_from_body(event, ev, focus="nonmotor"))
+        else:
+            focus = "nonmotor" if non and not motor else "auto"
+            _add(extract_detection_from_body(event, ev, focus=focus))
+
+    if not out:
+        # Keep legacy behaviour for empty / odd payloads
+        _add(extract_detection(event))
+    return out
+
+
+def extract_detection_from_body(
+    event: MultipartEvent,
+    ev: dict[str, Any] | None,
+    *,
+    focus: str = "auto",
+) -> dict[str, Any]:
+    """Normalize one event body into a detection.
+
+    focus:
+      - auto: legacy merge (car plate preferred; NonMotor forces moto class — avoided when split)
+      - motor: only Vehicle / TrafficCar / Object plate+body
+      - nonmotor: only NonMotor plate+body (class=motorcycle)
+    """
+    ev = ev if isinstance(ev, dict) else {}
     code = event.event_code or dig(ev, "EventBaseInfo.Code", "Code", "Name")
 
-    plate = dig(
-        ev,
-        "TrafficCar.PlateNumber",
-        "Object.PlateNumber",
-        "PlateNumber",
-        "TrafficCar.PlateNo",
-        "Plate.PlateNumber",
-        "NonMotor.PlateNumber",
-        "NonMotor.Object.PlateNumber",
-        "NonMotor.Plate.PlateNumber",
-        # Do NOT use Object.Text / NonMotor.Text — those are brand/model strings
-        # and cause clothing/billboard false plates.
-    )
-    plate_color = dig(
-        ev,
-        "TrafficCar.PlateColor",
-        "Object.PlateColor",
-        "PlateColor",
-        "NonMotor.PlateColor",
-        "NonMotor.Object.PlateColor",
-    )
-    plate_type = dig(ev, "TrafficCar.PlateType", "Object.PlateType", "PlateType", "NonMotor.PlateType")
+    if focus == "nonmotor":
+        plate = dig(
+            ev,
+            "NonMotor.PlateNumber",
+            "NonMotor.Object.PlateNumber",
+            "NonMotor.Plate.PlateNumber",
+        )
+        plate_color = dig(
+            ev,
+            "NonMotor.PlateColor",
+            "NonMotor.Object.PlateColor",
+            "NonMotor.Plate.PlateColor",
+        )
+        plate_type = dig(ev, "NonMotor.PlateType", "NonMotor.Object.PlateType")
+        plate_confidence = _as_float(
+            dig(ev, "NonMotor.Object.Confidence", "NonMotor.Plate.Confidence", "NonMotor.Confidence")
+        )
+        recognise_conf = _as_float(
+            dig(ev, "NonMotor.Object.RecogniseConf", "NonMotor.Plate.RecogniseConf")
+        )
+        plate_bbox_vals = _bbox(
+            ev,
+            "NonMotor.Object.BoundingBox",
+            "NonMotor.Plate.BoundingBox",
+            "NonMotor.BoundingBox",
+        )
+        vehicle_bbox_vals = _bbox(
+            ev,
+            "NonMotor.BoundingBox",
+            "NonMotor.Object.BoundingBox",
+        )
+        # Plate crop often stored under Object on NonMotor — if equal to body, keep as plate only when PlateNumber set
+        non_motor = dig(ev, "NonMotor", default={}) or {}
+        if not isinstance(non_motor, dict):
+            non_motor = {}
+        vehicle: dict[str, Any] = {}
+        snap_category = clean_camera_attr(dig(ev, "CommInfo.SnapCategory", "SnapCategory")) or "NonMotor"
+        vehicle_size = None
+        object_type = clean_camera_attr(dig(ev, "NonMotor.ObjectType") or non_motor.get("ObjectType"))
+        category = clean_camera_attr(
+            dig(ev, "NonMotor.Category", "NonMotor.ObjectType") or non_motor.get("Category")
+        )
+        brand = None
+        model = None
+        color = resolve_vehicle_color(
+            dig(ev, "NonMotor.Color", "NonMotor.VehicleColor") or non_motor.get("Color"),
+            rgb=None,
+            main_color=None,
+        )
+        color_rgb = None
+        has_non_motor_flag = True
+        direction = dig(ev, "VehicleDirection", "Direction", "NonMotor.Direction")
+    elif focus == "motor":
+        plate = dig(
+            ev,
+            "TrafficCar.PlateNumber",
+            "Object.PlateNumber",
+            "PlateNumber",
+            "TrafficCar.PlateNo",
+            "Plate.PlateNumber",
+        )
+        plate_color = dig(ev, "TrafficCar.PlateColor", "Object.PlateColor", "PlateColor")
+        plate_type = dig(ev, "TrafficCar.PlateType", "Object.PlateType", "PlateType")
+        plate_confidence = _as_float(dig(ev, "Object.Confidence", "Plate.Confidence"))
+        recognise_conf = _as_float(dig(ev, "Object.RecogniseConf", "Plate.RecogniseConf"))
+        plate_bbox_vals = _bbox(ev, "Object.BoundingBox", "TrafficCar.BoundingBox", "Plate.BoundingBox")
+        vehicle_bbox_vals = _bbox(ev, "Vehicle.BoundingBox")
+        vehicle = dig(ev, "Vehicle", default={}) or {}
+        if not isinstance(vehicle, dict):
+            vehicle = {}
+        non_motor = {}
+        snap_category = clean_camera_attr(dig(ev, "CommInfo.SnapCategory", "SnapCategory"))
+        vehicle_size = clean_camera_attr(dig(ev, "TrafficCar.VehicleSize", "VehicleSize"))
+        object_type = clean_camera_attr(dig(ev, "Vehicle.ObjectType") or vehicle.get("ObjectType"))
+        category = None
+        for path in (
+            "Vehicle.Category",
+            "TrafficCar.Category",
+            "TrafficCar.VehicleType",
+            "Vehicle.VehicleType",
+            "Category",
+        ):
+            category = clean_camera_attr(dig(ev, path))
+            if category:
+                break
+        brand = clean_camera_attr(
+            dig(ev, "Vehicle.Text", "TrafficCar.VehicleSign", "Text") or vehicle.get("Text")
+        )
+        model = clean_camera_attr(dig(ev, "Vehicle.SubText", "SubText") or vehicle.get("SubText"))
+        color = resolve_vehicle_color(
+            dig(ev, "Vehicle.VehicleColor", "TrafficCar.VehicleColor", "VehicleColor")
+            or vehicle.get("VehicleColor"),
+            rgb=dig(ev, "Vehicle.VehicleColorRGB", "VehicleColorRGB", "TrafficCar.VehicleColorRGB"),
+            main_color=dig(ev, "Vehicle.MainColor") or vehicle.get("MainColor"),
+        )
+        color_rgb = dig(ev, "Vehicle.VehicleColorRGB", "VehicleColorRGB", "Vehicle.MainColor") or vehicle.get(
+            "MainColor"
+        )
+        has_non_motor_flag = False
+        direction = dig(ev, "VehicleDirection", "Direction", "TrafficCar.Direction")
+    else:
+        plate = dig(
+            ev,
+            "TrafficCar.PlateNumber",
+            "Object.PlateNumber",
+            "PlateNumber",
+            "TrafficCar.PlateNo",
+            "Plate.PlateNumber",
+            "NonMotor.PlateNumber",
+            "NonMotor.Object.PlateNumber",
+            "NonMotor.Plate.PlateNumber",
+        )
+        plate_color = dig(
+            ev,
+            "TrafficCar.PlateColor",
+            "Object.PlateColor",
+            "PlateColor",
+            "NonMotor.PlateColor",
+            "NonMotor.Object.PlateColor",
+        )
+        plate_type = dig(ev, "TrafficCar.PlateType", "Object.PlateType", "PlateType", "NonMotor.PlateType")
+        plate_confidence = _as_float(
+            dig(ev, "Object.Confidence", "Plate.Confidence", "NonMotor.Object.Confidence")
+        )
+        recognise_conf = _as_float(
+            dig(ev, "Object.RecogniseConf", "Plate.RecogniseConf", "NonMotor.Object.RecogniseConf")
+        )
+        plate_bbox_vals = _bbox(
+            ev,
+            "Object.BoundingBox",
+            "TrafficCar.BoundingBox",
+            "Plate.BoundingBox",
+            "NonMotor.Object.BoundingBox",
+            "NonMotor.Plate.BoundingBox",
+        )
+        vehicle_bbox_vals = _bbox(
+            ev,
+            "Vehicle.BoundingBox",
+            "NonMotor.BoundingBox",
+            "NonMotor.Object.BoundingBox",
+        )
+        vehicle = dig(ev, "Vehicle", default={}) or {}
+        if not isinstance(vehicle, dict):
+            vehicle = {}
+        non_motor = dig(ev, "NonMotor", default={}) or {}
+        if not isinstance(non_motor, dict):
+            non_motor = {}
+        snap_category = clean_camera_attr(dig(ev, "CommInfo.SnapCategory", "SnapCategory"))
+        vehicle_size = clean_camera_attr(dig(ev, "TrafficCar.VehicleSize", "VehicleSize"))
+        object_type = clean_camera_attr(
+            dig(ev, "Vehicle.ObjectType", "NonMotor.ObjectType") or vehicle.get("ObjectType")
+        )
+        category = None
+        for path in (
+            "Vehicle.Category",
+            "TrafficCar.Category",
+            "TrafficCar.VehicleType",
+            "Vehicle.VehicleType",
+            "NonMotor.Category",
+            "NonMotor.ObjectType",
+            "Category",
+        ):
+            category = clean_camera_attr(dig(ev, path))
+            if category:
+                break
+        brand = clean_camera_attr(
+            dig(ev, "Vehicle.Text", "TrafficCar.VehicleSign", "Text") or vehicle.get("Text")
+        )
+        model = clean_camera_attr(dig(ev, "Vehicle.SubText", "SubText") or vehicle.get("SubText"))
+        color = resolve_vehicle_color(
+            dig(ev, "Vehicle.VehicleColor", "TrafficCar.VehicleColor", "VehicleColor", "NonMotor.Color")
+            or vehicle.get("VehicleColor"),
+            rgb=dig(ev, "Vehicle.VehicleColorRGB", "VehicleColorRGB", "TrafficCar.VehicleColorRGB"),
+            main_color=dig(ev, "Vehicle.MainColor") or vehicle.get("MainColor"),
+        )
+        color_rgb = dig(ev, "Vehicle.VehicleColorRGB", "VehicleColorRGB", "Vehicle.MainColor") or vehicle.get(
+            "MainColor"
+        )
+        has_non_motor_flag = bool(non_motor) and _has_non_motor(ev)
+        direction = dig(ev, "VehicleDirection", "Direction", "TrafficCar.Direction")
+
     front_plate = dig(ev, "FrontPlateNumber", "TrafficCar.FrontPlateNumber", "Object.FrontPlateNumber")
     back_plate = dig(ev, "BackPlateNumber", "TrafficCar.BackPlateNumber", "Object.BackPlateNumber")
     front_plate_color = dig(ev, "FrontPlateColor", "TrafficCar.FrontPlateColor")
     back_plate_color = dig(ev, "BackPlateColor", "TrafficCar.BackPlateColor")
 
-    vehicle = dig(ev, "Vehicle", default={}) or {}
-    if not isinstance(vehicle, dict):
-        vehicle = {}
-    non_motor = dig(ev, "NonMotor", default={}) or {}
-    if not isinstance(non_motor, dict):
-        non_motor = {}
-
-    brand = clean_camera_attr(
-        dig(ev, "Vehicle.Text", "TrafficCar.VehicleSign", "Text") or vehicle.get("Text")
-    )
-    model = clean_camera_attr(dig(ev, "Vehicle.SubText", "SubText") or vehicle.get("SubText"))
-
-    # Prefer real type hints; skip allow-list CarType (NormalCar) and literal Unknown
-    snap_category = clean_camera_attr(dig(ev, "CommInfo.SnapCategory", "SnapCategory"))
-    vehicle_size = clean_camera_attr(dig(ev, "TrafficCar.VehicleSize", "VehicleSize"))
-    object_type = clean_camera_attr(
-        dig(ev, "Vehicle.ObjectType", "NonMotor.ObjectType") or vehicle.get("ObjectType")
-    )
-    category = None
-    for path in (
-        "Vehicle.Category",
-        "TrafficCar.Category",
-        "TrafficCar.VehicleType",
-        "Vehicle.VehicleType",
-        "NonMotor.Category",
-        "NonMotor.ObjectType",
-        "Category",
-    ):
-        category = clean_camera_attr(dig(ev, path))
-        if category:
-            break
-    # CarType is list status (NormalCar/TrustCar) — only use if it looks like a body type
     car_type = clean_camera_attr(dig(ev, "TrafficCar.CarType", "CarType"))
-    if car_type and car_type.lower().replace(" ", "") not in (
+    if focus != "nonmotor" and car_type and car_type.lower().replace(" ", "") not in (
         "normalcar",
         "trustcar",
         "suspiciouscar",
     ):
         category = category or car_type
-    if not category and vehicle_size:
+    if not category and vehicle_size and focus != "nonmotor":
         category = vehicle_size
-    if not category and snap_category:
+    if not category and snap_category and focus != "nonmotor":
         category = "MotorVehicle" if snap_category.lower() == "motor" else snap_category
 
-    color = resolve_vehicle_color(
-        dig(ev, "Vehicle.VehicleColor", "TrafficCar.VehicleColor", "VehicleColor", "NonMotor.Color")
-        or vehicle.get("VehicleColor"),
-        rgb=dig(ev, "Vehicle.VehicleColorRGB", "VehicleColorRGB", "TrafficCar.VehicleColorRGB"),
-        main_color=dig(ev, "Vehicle.MainColor") or vehicle.get("MainColor"),
-    )
-    color_rgb = dig(ev, "Vehicle.VehicleColorRGB", "VehicleColorRGB", "Vehicle.MainColor") or vehicle.get(
-        "MainColor"
-    )
     plate_color = clean_camera_attr(plate_color)
-    # If body color missing, keep plate color available; do not overwrite vehicle_color
-    # with plate paint — UI shows both.
     speed = dig(
         ev,
         "Speed",
@@ -186,7 +435,6 @@ def extract_detection(event: MultipartEvent) -> dict[str, Any]:
     )
     lane = dig(ev, "Lane", "TrafficCar.Lane", "PhysicalLane")
     physical_lane = dig(ev, "PhysicalLane")
-    direction = dig(ev, "VehicleDirection", "Direction", "TrafficCar.Direction")
     junction_dir = dig(ev, "JunctionDirection")
     trigger_occur = dig(ev, "TriggerOccur")
     trigger_type = dig(ev, "TriggerType")
@@ -204,16 +452,10 @@ def extract_detection(event: MultipartEvent) -> dict[str, Any]:
     seatbelt_main, seatbelt_sub, calling, smoking, sun_shade = _seat_flags(ev)
 
     plate_norm = normalize_plate(str(plate) if plate is not None else None)
-    plate_confidence = _as_float(
-        dig(ev, "Object.Confidence", "Plate.Confidence", "NonMotor.Object.Confidence")
-    )
-    recognise_conf = _as_float(
-        dig(ev, "Object.RecogniseConf", "Plate.RecogniseConf", "NonMotor.Object.RecogniseConf")
-    )
     unlicensed = False
     if plate is None or plate_norm is None or str(plate).strip() in ("", "unknown", "Unknown", "-"):
         if code and ("Traffic" in str(code) or "Junction" in str(code) or "Measurement" in str(code)):
-            if dig(ev, "Vehicle", "TrafficCar", "Object", "NonMotor") is not None:
+            if focus == "nonmotor" or dig(ev, "Vehicle", "TrafficCar", "Object", "NonMotor") is not None:
                 unlicensed = plate_norm is None
 
     speed_limit = dig(ev, "SpeedLimit")
@@ -226,32 +468,20 @@ def extract_detection(event: MultipartEvent) -> dict[str, Any]:
     speed_limit_norm = normalize_speed_limit(speed_limit)
 
     category_s = clean_camera_attr(category)
-    plate_bbox_vals = _bbox(
-        ev,
-        "Object.BoundingBox",
-        "TrafficCar.BoundingBox",
-        "Plate.BoundingBox",
-        "NonMotor.Object.BoundingBox",
-        "NonMotor.Plate.BoundingBox",
-    )
-    vehicle_bbox_vals = _bbox(
-        ev,
-        "Vehicle.BoundingBox",
-        "NonMotor.BoundingBox",
-        "NonMotor.Object.BoundingBox",
-    )
     vehicle_class = classify_vehicle(
         category_s,
         event_code=str(code) if code else None,
         snap_category=snap_category,
         vehicle_size=vehicle_size,
         object_type=object_type,
-        has_non_motor=bool(non_motor),
+        has_non_motor=has_non_motor_flag,
         plate_number=plate_norm,
         plate_bbox=plate_bbox_vals,
         plate_type=clean_camera_attr(plate_type),
         vehicle_bbox=vehicle_bbox_vals,
     )
+    if focus == "nonmotor":
+        vehicle_class = "motorcycle"
     if vehicle_class == "motorcycle":
         category_s = category_s or "Motorcycle"
     elif vehicle_class == "truck":
@@ -303,12 +533,17 @@ def extract_detection(event: MultipartEvent) -> dict[str, Any]:
         "country": dig(ev, "Object.Country", "Country", "TrafficCar.Country"),
         "rec_no": dig(ev, "TrafficCar.RecNo", "RecNo", "EventID"),
         "plate_bbox": plate_bbox_vals,
-        "vehicle_bbox": vehicle_bbox_vals or _bbox(
-            ev,
-            "Vehicle.BoundingBox",
-            "NonMotor.BoundingBox",
-            "NonMotor.Object.BoundingBox",
-            "Object.BoundingBox",
+        "vehicle_bbox": vehicle_bbox_vals
+        or (
+            None
+            if focus == "nonmotor"
+            else _bbox(
+                ev,
+                "Vehicle.BoundingBox",
+                "NonMotor.BoundingBox",
+                "NonMotor.Object.BoundingBox",
+                "Object.BoundingBox",
+            )
         ),
         "speed_limit": speed_limit,
         "speed_limit_norm": speed_limit_norm,
@@ -320,6 +555,7 @@ def extract_detection(event: MultipartEvent) -> dict[str, Any]:
         "sub_brand": dig(ev, "Vehicle.SubBrand", "SubBrand"),
         "pts": dig(ev, "PTS"),
         "utcms": dig(ev, "UTCMS"),
+        "extract_focus": focus,
     }
 
 
@@ -466,17 +702,3 @@ def extract_jam_event(event: MultipartEvent) -> dict[str, Any] | None:
         "alarm_interval": dig(ev, "AlarmInterval"),
         "payload": ev,
     }
-
-
-def _as_int(v: Any) -> int | None:
-    try:
-        return int(v) if v is not None and v != "" else None
-    except (TypeError, ValueError):
-        return None
-
-
-def _as_float(v: Any) -> float | None:
-    try:
-        return float(v) if v is not None and v != "" else None
-    except (TypeError, ValueError):
-        return None

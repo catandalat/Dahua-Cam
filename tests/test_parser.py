@@ -158,3 +158,46 @@ def test_code_data_json_block_without_plate_motorcycle():
     assert det["vehicle_category"] == "Motorcycle"
     assert det["unlicensed"] is True
 
+
+def test_extract_detections_splits_car_and_motorcycle():
+    from dahua_client.extract import extract_detections
+
+    text = """Code=TrafficManualSnap;action=Pulse;index=0;data={
+   "TrafficCar" : {
+      "PlateNumber" : "51A12345",
+      "VehicleSize" : "Light-duty"
+   },
+   "Vehicle" : {
+      "BoundingBox" : [100, 2000, 4000, 5000],
+      "Category" : "Car"
+   },
+   "Object" : {
+      "PlateNumber" : "51A12345",
+      "BoundingBox" : [2000, 4500, 2400, 4700],
+      "Confidence" : 90
+   },
+   "NonMotor" : {
+      "Category" : "Motorcycle",
+      "Color" : "Red",
+      "BoundingBox" : [500, 4000, 1800, 5500],
+      "PlateNumber" : "49B123456",
+      "Object" : {
+         "BoundingBox" : [900, 5000, 1100, 5300],
+         "Confidence" : 80
+      }
+   },
+   "CommInfo" : { "SnapCategory" : "Motor" },
+   "UTC" : 1700000000
+}
+"""
+    data = kv_lines_to_dict(text)
+    event = MultipartEvent(text=text, data=data)
+    dets = extract_detections(event)
+    classes = {d["vehicle_class"] for d in dets}
+    plates = {d["plate_number"] for d in dets}
+    assert "car" in classes
+    assert "motorcycle" in classes
+    assert "51A12345" in plates
+    assert "49B123456" in plates
+    assert len(dets) == 2
+

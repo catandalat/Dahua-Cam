@@ -12,7 +12,7 @@ from sqlalchemy.orm import selectinload
 
 from dahua_client.client import DahuaClient, select_subscribe_codes
 from dahua_client.extract import (
-    extract_detection,
+    extract_detections,
     extract_flow_sample,
     extract_jam_event,
 )
@@ -491,7 +491,22 @@ class CameraWorker:
                 )
                 return
 
-        det = extract_detection(event)
+        dets = extract_detections(event)
+        # Motorcycle first so same-frame car doesn't monopolize processing order
+        dets.sort(
+            key=lambda d: 0 if str(d.get("vehicle_class") or "") == "motorcycle" else 1
+        )
+        for det in dets:
+            await self._handle_detection(cam, event, det, code)
+
+    async def _handle_detection(
+        self,
+        cam: Camera,
+        event: MultipartEvent,
+        det: dict[str, Any],
+        code: str,
+    ) -> None:
+        settings = get_settings()
         # #region agent log
         _pb = det.get("plate_bbox")
         _pb_aspect = None
