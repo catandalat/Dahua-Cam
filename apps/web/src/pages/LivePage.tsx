@@ -133,21 +133,38 @@ export default function LivePage() {
       .then((o) => setShapes(o.shapes || []))
       .catch((e) => setMsg(String(e)));
     api
-      .liveDetections(cameraId, 15)
+      .liveDetections(cameraId, 3)
       .then((rows) =>
         setOverlayDets(
-          rows.map((d) => ({
-            id: d.id,
-            plate_number: d.plate_number,
-            plate_bbox: d.plate_bbox,
-            vehicle_bbox: d.vehicle_bbox,
-            vehicle_class: d.vehicle_class,
-            event_utc: d.event_utc,
-          })),
+          rows
+            .filter((d) => d.plate_number && (d.plate_bbox || d.vehicle_bbox))
+            .map((d) => ({
+              id: d.id,
+              plate_number: d.plate_number,
+              plate_bbox: d.plate_bbox,
+              vehicle_bbox: d.vehicle_bbox,
+              vehicle_class: d.vehicle_class,
+              event_utc: d.event_utc,
+            })),
         ),
       )
-      .catch(() => null);
+      .catch(() => setOverlayDets([]));
   }, [cameraId]);
+
+  // Expire overlay boxes so they don't linger as "viền ảo" on newer snapshots
+  useEffect(() => {
+    const t = setInterval(() => {
+      const cutoff = Date.now() - 12_000;
+      setOverlayDets((prev) =>
+        prev.filter((d) => {
+          if (!d.event_utc) return false;
+          const ts = Date.parse(d.event_utc);
+          return Number.isFinite(ts) && ts >= cutoff;
+        }),
+      );
+    }, 2000);
+    return () => clearInterval(t);
+  }, []);
 
   useEffect(() => {
     if (!liveSnap || !cameraId) return;
@@ -171,20 +188,22 @@ export default function LivePage() {
         const meta = (d as Detection & { meta?: Record<string, unknown> }).meta || {};
 
         if (!cameraId || d.camera_id === cameraId) {
-          setOverlayDets((prev) =>
-            [
-              {
-                id: d.id,
-                plate_number: d.plate_number,
-                plate_bbox: meta.plate_bbox as number[] | undefined,
-                vehicle_bbox: meta.vehicle_bbox as number[] | undefined,
-                vehicle_class: d.vehicle_class,
-                speed: d.speed,
-                event_utc: d.event_utc,
-              },
-              ...prev,
-            ].slice(0, 20),
-          );
+          if (d.plate_number && (meta.plate_bbox || meta.vehicle_bbox)) {
+            setOverlayDets((prev) =>
+              [
+                {
+                  id: d.id,
+                  plate_number: d.plate_number,
+                  plate_bbox: meta.plate_bbox as number[] | undefined,
+                  vehicle_bbox: meta.vehicle_bbox as number[] | undefined,
+                  vehicle_class: d.vehicle_class,
+                  speed: d.speed,
+                  event_utc: d.event_utc,
+                },
+                ...prev.filter((x) => x.id !== d.id),
+              ].slice(0, 2),
+            );
+          }
         }
 
         const okCam = !onlyThisCam || !cameraId || d.camera_id === cameraId;
@@ -284,8 +303,9 @@ export default function LivePage() {
     }
 
     if (showDets) {
-      for (const d of overlayDets.slice(0, 8)) {
-        const box = d.vehicle_bbox || d.plate_bbox;
+      // Only freshest box — prefer plate; avoid stacking stale vehicle frames
+      for (const d of overlayDets.slice(0, 1)) {
+        const box = d.plate_bbox || d.vehicle_bbox;
         if (!box || box.length < 4) continue;
         const [x1, y1] = toCanvas([box[0], box[1]], w, h);
         const [x2, y2] = toCanvas([box[2], box[3]], w, h);
@@ -644,7 +664,7 @@ export default function LivePage() {
                 checked={showDets}
                 onChange={(e) => setShowDets(e.target.checked)}
               />
-              Khung xe / biển trên ảnh
+              Hiện khung biển (chỉ vài giây sau nhận diện)
             </label>
           </div>
         </div>
@@ -760,7 +780,7 @@ export default function LivePage() {
                       d.vehicle_brand,
                       d.vehicle_model,
                       d.vehicle_category,
-                      d.speed != null ? `${d.speed} km/h` : null,
+                      d.speed != null && Number(d.speed) > 0 ? `${d.speed} km/h` : null,
                     ]
                       .filter(Boolean)
                       .join(" · ") || d.event_code}

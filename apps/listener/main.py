@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +25,7 @@ from domain.models import (
     JamEvent,
     Lane,
     TrafficFlowSample,
+    VehicleDetection,
     ViolationEvent,
 )
 from domain.overlay_gate import (
@@ -120,6 +121,15 @@ class CameraWorker:
         )
         logger.info("Connecting camera %s (%s) codes=%s", cam.name, cam.host, codes)
         await self._set_status("connecting")
+
+        # Sync camera wall clock to VN local time (fixes OSD year 2024 / wrong event times)
+        try:
+            before = await client.get_current_time()
+            await client.set_current_time()
+            after = await client.get_current_time()
+            logger.info("Synced camera clock %s: %s → %s", cam.name, before, after)
+        except Exception as exc:
+            logger.warning("Could not sync camera clock %s: %s", cam.name, exc)
 
         # Optional side-stream for vehicles distribution (best-effort)
         dist_task = asyncio.create_task(self._attach_distribution(cam), name=f"dist-{cam.id}")
@@ -389,8 +399,30 @@ class CameraWorker:
             last_group_id=self._last_group_id,
             last_utc=self._last_utc,
         ):
-            logger.debug("Dedupe skip plate=%s group=%s", det.get("plate_number"), det.get("group_id"))
+            logger.info(
+                "Dedupe skip plate=%s group=%s",
+                det.get("plate_number"),
+                det.get("group_id"),
+            )
             return
+
+        # DB cooldown: same plate on this camera within 90s (survives listener restart)
+        plate = det.get("plate_number")
+        if plate:
+            since = datetime.now(timezone.utc) - timedelta(seconds=90)
+            async with SessionLocal() as db:
+                recent = await db.scalar(
+                    select(VehicleDetection.id)
+                    .where(
+                        VehicleDetection.camera_id == cam.id,
+                        VehicleDetection.plate_number == plate,
+                        VehicleDetection.created_at >= since,
+                    )
+                    .limit(1)
+                )
+            if recent:
+                logger.info("Cooldownoldown skip plate=%s cam=%s (<90s)", plate, cam.name)
+                return
 
         image_paths = await self._save_images(event, cam.id)
         source_jpeg = None

@@ -135,8 +135,8 @@ export const api = {
       `/cameras/${cameraId}/overlay`,
       { method: "PUT", body: JSON.stringify(body) },
     ),
-  liveDetections: (cameraId: string, limit = 20) =>
-    request<LiveDetection[]>(`/cameras/${cameraId}/live-detections?limit=${limit}`),
+  liveDetections: (cameraId: string, limit = 3) =>
+    request<LiveDetection[]>(`/cameras/${cameraId}/live-detections?limit=${limit}&max_age_sec=12`),
 };
 
 export type OverlayShape = {

@@ -476,7 +476,7 @@ def _detection_out(d: VehicleDetection) -> dict[str, Any]:
         "vehicle_category": d.vehicle_category,
         "vehicle_class": d.vehicle_class,
         "vehicle_color": d.vehicle_color,
-        "speed": d.speed,
+        "speed": d.speed if d.speed is not None and float(d.speed) > 0 else None,
         "lane_number": d.lane_number,
         "vehicle_direction": d.vehicle_direction,
         "passage_direction": d.passage_direction,
@@ -505,7 +505,7 @@ async def list_detections(
     offset: int = Query(0, ge=0),
     db: AsyncSession = Depends(get_session),
 ) -> list[dict[str, Any]]:
-    q: Select[Any] = select(VehicleDetection).order_by(VehicleDetection.event_utc.desc().nullslast())
+    q: Select[Any] = select(VehicleDetection).order_by(VehicleDetection.created_at.desc())
     if plate:
         q = q.where(VehicleDetection.plate_number == normalize_plate(plate))
     if site_id:

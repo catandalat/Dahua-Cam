@@ -77,10 +77,18 @@ export default function SpeedPage() {
       <header className="space-y-1">
         <h2 className="text-xl md:text-2xl font-semibold">Tốc độ & cảnh báo</h2>
         <p className="text-slate-400 text-sm">
-          Đặt ngưỡng theo camera · đo realtime · cảnh báo vượt tốc trên dashboard
+          Đặt ngưỡng theo camera · đo realtime · cảnh báo vượt tốc trên dashboard.
+          Camera ANPR không radar (vd. ITC413) thường gửi Speed=0 — hệ thống coi là chưa đo, không
+          hiện 0 km/h.
         </p>
       </header>
 
+      {policies.some((p) => p.device_error) && (
+        <div className="text-sm border border-warn/40 text-warn rounded-lg px-3 py-2">
+          Một số camera không hỗ trợ CGI tốc độ (radar). Chỉ hiển thị tốc độ khi sự kiện có giá trị &gt; 0
+          km/h.
+        </div>
+      )}
       {msg && (
         <div className="text-sm border border-line rounded-lg px-3 py-2 break-words">{msg}</div>
       )}

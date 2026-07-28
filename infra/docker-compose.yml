@@ -33,6 +33,7 @@ services:
     env_file:
       - ../.env
     environment:
+      TZ: Asia/Ho_Chi_Minh
       DATABASE_URL: postgresql+asyncpg://anpr:anpr@postgres:5432/anpr
       DATABASE_URL_SYNC: postgresql://anpr:anpr@postgres:5432/anpr
       REDIS_URL: redis://redis:6379/0
@@ -57,6 +58,7 @@ services:
     env_file:
       - ../.env
     environment:
+      TZ: Asia/Ho_Chi_Minh
       DATABASE_URL: postgresql+asyncpg://anpr:anpr@postgres:5432/anpr
       DATABASE_URL_SYNC: postgresql://anpr:anpr@postgres:5432/anpr
       REDIS_URL: redis://redis:6379/0
@@ -78,6 +80,7 @@ services:
     ports:
       - "5173:5173"
     environment:
+      TZ: Asia/Ho_Chi_Minh
       VITE_API_URL: http://localhost:8000
       VITE_WS_URL: ws://localhost:8000/ws/live
     volumes:

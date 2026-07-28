@@ -49,9 +49,9 @@ def should_dedupe(
     last_plate: str | None,
     last_group_id: int | None,
     last_utc: datetime | None,
-    window_seconds: float = 3.0,
+    window_seconds: float = 90.0,
 ) -> bool:
-    """Suppress near-duplicate fires for same plate/group within a short window."""
+    """Suppress near-duplicate fires for same plate/group (parked / sticky ANPR)."""
     np = normalize_plate(plate)
     lp = normalize_plate(last_plate)
     if not np or not lp or np != lp:

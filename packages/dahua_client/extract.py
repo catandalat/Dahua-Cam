@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from dahua_client.kv_parser import dig
 from dahua_client.multipart import MultipartEvent
@@ -9,28 +10,63 @@ from domain.plate import normalize_plate
 from domain.schemas import EVENT_TO_VIOLATION, ViolationType
 from domain.vehicle_class import classify_vehicle
 
+_MAX_CLOCK_SKEW = timedelta(hours=36)
+_MAX_FUTURE_SKEW = timedelta(minutes=2)
+_VN = ZoneInfo("Asia/Ho_Chi_Minh")
+
 
 def _event_utc(ev: dict[str, Any]) -> datetime | None:
-    for key in ("UTC", "Utc", "Pts", "PTS", "UTCMS"):
+    """Event time in UTC. Rejects camera clocks that are years/days off or in the future."""
+    now = datetime.now(timezone.utc)
+    candidates: list[datetime] = []
+
+    for key in ("UTC", "Utc"):
         val = dig(ev, key, f"EventBaseInfo.{key}")
         if val is None:
             continue
         try:
             n = float(val)
-            if key == "UTCMS" or n > 10_000_000_000:
+            if n > 10_000_000_000:
                 n = n / 1000.0
-            return datetime.fromtimestamp(n, tz=timezone.utc)
+            if n > 1_000_000_000:
+                candidates.append(datetime.fromtimestamp(n, tz=timezone.utc))
         except (TypeError, ValueError, OSError):
             continue
+
     for key in ("LocalTime", "Time"):
         val = dig(ev, key)
         if isinstance(val, str) and val:
             for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
                 try:
-                    return datetime.strptime(val, fmt).replace(tzinfo=timezone.utc)
+                    local = datetime.strptime(val, fmt).replace(tzinfo=_VN)
+                    candidates.append(local.astimezone(timezone.utc))
+                    break
                 except ValueError:
                     continue
-    return None
+
+    for key in ("UTCMS",):
+        val = dig(ev, key, f"EventBaseInfo.{key}")
+        if val is None:
+            continue
+        try:
+            n = float(val)
+            if n > 10_000_000_000:
+                n = n / 1000.0
+            if n > 1_000_000_000:
+                candidates.append(datetime.fromtimestamp(n, tz=timezone.utc))
+        except (TypeError, ValueError, OSError):
+            continue
+
+    for c in candidates:
+        # Reject future stamps (camera clock ahead) and ancient ones
+        if c > now + _MAX_FUTURE_SKEW:
+            continue
+        if now - c > _MAX_CLOCK_SKEW:
+            continue
+        return c
+
+    # Camera OSD/clock wrong — use receive time so UI/history stay correct
+    return now
 
 
 def _bbox(ev: dict[str, Any], *paths: str) -> list[int] | None:
@@ -120,7 +156,16 @@ def extract_detection(event: MultipartEvent) -> dict[str, Any]:
         "VehicleColor"
     )
     color_rgb = dig(ev, "Vehicle.VehicleColorRGB", "VehicleColorRGB")
-    speed = dig(ev, "Speed", "TrafficCar.Speed", "Vehicle.Speed")
+    speed = dig(
+        ev,
+        "Speed",
+        "TrafficCar.Speed",
+        "Vehicle.Speed",
+        "TrafficCar.VehicleSpeed",
+        "Object.Speed",
+        "RadarSpeed",
+        "MeasureSpeed",
+    )
     lane = dig(ev, "Lane", "TrafficCar.Lane", "PhysicalLane")
     physical_lane = dig(ev, "PhysicalLane")
     direction = dig(ev, "VehicleDirection", "Direction", "TrafficCar.Direction")
@@ -152,7 +197,7 @@ def extract_detection(event: MultipartEvent) -> dict[str, Any]:
     under_pct = dig(ev, "UnderSpeedingPercentage")
     red_light_utc = dig(ev, "RedLightUTC")
 
-    from domain.speed import normalize_speed_limit
+    from domain.speed import normalize_measured_speed, normalize_speed_limit
 
     speed_limit_norm = normalize_speed_limit(speed_limit)
 
@@ -193,7 +238,7 @@ def extract_detection(event: MultipartEvent) -> dict[str, Any]:
         "vehicle_class": vehicle_class,
         "vehicle_color": color,
         "vehicle_color_rgb": color_rgb,
-        "speed": _as_float(speed),
+        "speed": normalize_measured_speed(speed),
         "lane": _as_int(lane),
         "physical_lane": _as_int(physical_lane),
         "vehicle_direction": direction,

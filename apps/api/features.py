@@ -290,7 +290,7 @@ async def speed_stats(
         dq = dq.where(VehicleDetection.site_id == site_id)
     dets = (await db.scalars(dq.order_by(VehicleDetection.event_utc.desc()).limit(5000))).all()
 
-    speeds = [float(d.speed) for d in dets if d.speed is not None]
+    speeds = [float(d.speed) for d in dets if d.speed is not None and float(d.speed) > 0]
     vq = select(ViolationEvent).where(
         ViolationEvent.event_utc >= since,
         ViolationEvent.violation_type.in_(["overspeed", "underspeed"]),
@@ -367,7 +367,10 @@ async def speed_measurements(
 
     q = (
         select(VehicleDetection)
-        .where(VehicleDetection.speed.is_not(None))
+        .where(
+            VehicleDetection.speed.is_not(None),
+            VehicleDetection.speed > 0,
+        )
         .order_by(VehicleDetection.event_utc.desc().nullslast())
         .limit(limit * 3 if only_violations else limit)
     )
@@ -804,16 +807,22 @@ async def put_overlay(
 @router.get("/cameras/{camera_id}/live-detections")
 async def camera_live_detections(
     camera_id: UUID,
-    limit: int = Query(20, ge=1, le=100),
+    limit: int = Query(5, ge=1, le=50),
+    max_age_sec: int = Query(12, ge=1, le=300),
     db: AsyncSession = Depends(get_session),
 ) -> list[dict[str, Any]]:
-    """Nhận diện gần đây của camera (kèm bbox để vẽ lên ảnh quan sát)."""
+    """Nhận diện rất gần đây theo created_at (tránh event_utc lệch làm kẹt bbox)."""
     await _cam(camera_id, db)
+    since = datetime.now(timezone.utc) - timedelta(seconds=max_age_sec)
     rows = (
         await db.scalars(
             select(VehicleDetection)
-            .where(VehicleDetection.camera_id == camera_id)
-            .order_by(VehicleDetection.event_utc.desc().nullslast())
+            .where(
+                VehicleDetection.camera_id == camera_id,
+                VehicleDetection.created_at >= since,
+                VehicleDetection.plate_number.is_not(None),
+            )
+            .order_by(VehicleDetection.created_at.desc())
             .limit(limit)
         )
     ).all()

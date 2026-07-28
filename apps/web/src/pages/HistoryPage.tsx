@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { api, Session } from "../api";
 
 function fmtSpeed(v?: number | null) {
-  return v != null && !Number.isNaN(Number(v)) ? `${v} km/h` : "—";
+  return v != null && !Number.isNaN(Number(v)) && Number(v) > 0 ? `${v} km/h` : "—";
 }
 
 export default function HistoryPage() {

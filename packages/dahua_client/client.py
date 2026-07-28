@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import AsyncIterator
+from datetime import datetime
 from typing import Any
 import httpx
 
@@ -300,6 +301,29 @@ class DahuaClient:
             )
             r2.raise_for_status()
             return r2.content
+
+    async def get_current_time(self) -> str:
+        text = await self.get_text("/cgi-bin/global.cgi", {"action": "getCurrentTime"})
+        # result=2026-7-28 10:04:00  or similar
+        data = kv_lines_to_dict(text)
+        return str(data.get("result") or data.get("time") or text).strip()
+
+    async def set_current_time(self, when: datetime | None = None) -> str:
+        """Set camera wall clock (local time string Y-M-D H:m:S)."""
+        from datetime import datetime as _dt
+        from zoneinfo import ZoneInfo
+
+        dt = when or _dt.now(ZoneInfo("Asia/Ho_Chi_Minh"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=ZoneInfo("Asia/Ho_Chi_Minh"))
+        else:
+            dt = dt.astimezone(ZoneInfo("Asia/Ho_Chi_Minh"))
+        # Dahua accepts Y-M-D H:m:S (no zero-pad required, but padded is fine)
+        stamp = f"{dt.year}-{dt.month}-{dt.day} {dt.hour}:{dt.minute:02d}:{dt.second:02d}"
+        return await self.get_text(
+            "/cgi-bin/global.cgi",
+            {"action": "setCurrentTime", "time": stamp},
+        )
 
     async def snapshot(self, channel: int = 1) -> bytes:
         async with self._client(timeout=15.0) as client:

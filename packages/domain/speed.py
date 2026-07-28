@@ -5,6 +5,22 @@ from __future__ import annotations
 from typing import Any
 
 
+def normalize_measured_speed(raw: Any) -> float | None:
+    """Return measured km/h, or None when camera did not measure (0 / missing).
+
+    Many ITC ANPR units (no radar) always emit Speed=0 — that is not a real reading.
+    """
+    if raw is None or raw == "":
+        return None
+    try:
+        spd = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if spd <= 0:
+        return None
+    return spd
+
+
 def normalize_speed_limit(raw: Any) -> dict[str, float | None]:
     """Parse Dahua SpeedLimit (often [min, max] or a single max) into min/max."""
     min_s: float | None = None
@@ -89,6 +105,8 @@ def evaluate_speed_policy(
         spd = float(speed)
     except (TypeError, ValueError):
         return []
+    if spd <= 0:
+        return []
 
     existing = existing_types or set()
     out: list[dict[str, Any]] = []
@@ -146,12 +164,10 @@ def speed_status(
     max_speed: float | None = None,
 ) -> str:
     """ok | overspeed | underspeed | unknown"""
-    if speed is None:
+    measured = normalize_measured_speed(speed)
+    if measured is None:
         return "unknown"
-    try:
-        spd = float(speed)
-    except (TypeError, ValueError):
-        return "unknown"
+    spd = measured
     if max_speed is not None and spd > float(max_speed):
         return "overspeed"
     if min_speed is not None and float(min_speed) > 0 and spd < float(min_speed):

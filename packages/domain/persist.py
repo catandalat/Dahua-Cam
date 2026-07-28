@@ -274,6 +274,15 @@ async def persist_detection(
     # normalize any absolute paths already present
     image_paths = {k: to_relative_snapshot_path(v) for k, v in image_paths.items()}
 
+    now = datetime.now(timezone.utc)
+    event_utc = det.get("event_utc") or now
+    if getattr(event_utc, "tzinfo", None) is None:
+        event_utc = event_utc.replace(tzinfo=timezone.utc)
+    # Never store future-dated events (sticky plates / wrong camera clock)
+    if event_utc > now:
+        event_utc = now
+    det = {**det, "event_utc": event_utc}
+
     passage = resolve_passage_direction(
         cam.direction_role,
         det.get("trigger_occur"),
@@ -285,7 +294,7 @@ async def persist_detection(
     raw = RawEvent(
         camera_id=cam.id,
         event_code=det.get("event_code"),
-        event_utc=det.get("event_utc"),
+        event_utc=event_utc,
         payload=_json_safe(raw_payload or det),
         image_paths=image_paths or None,
     )
@@ -299,7 +308,7 @@ async def persist_detection(
         gate_id=gate_id or None,
         lane_id=cam.lane_id,
         event_code=det.get("event_code"),
-        event_utc=det.get("event_utc") or datetime.now(timezone.utc),
+        event_utc=event_utc,
         plate_raw=det.get("plate_raw"),
         plate_number=det.get("plate_number"),
         plate_color=str(det["plate_color"]) if det.get("plate_color") is not None else None,
