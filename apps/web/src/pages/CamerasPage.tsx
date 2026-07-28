@@ -85,7 +85,7 @@ export default function CamerasPage() {
         <div>
           <h2 className="text-xl md:text-2xl font-semibold">Camera</h2>
           <p className="text-slate-400 text-sm mt-1">
-            Thêm IP camera thật · bật thu sự kiện · giả lập nhận diện để kiểm thử không cần thiết bị
+            Camera thật đang chạy · cổng HTTP 80 · bật thu sự kiện để nhận biển số realtime
           </p>
         </div>
         <div className="flex gap-2 shrink-0">
@@ -118,10 +118,14 @@ export default function CamerasPage() {
         <Field label="Tên" value={form.name} onChange={(v) => setForm({ ...form, name: v })} />
         <Field label="Địa chỉ IP / Host" value={form.host} onChange={(v) => setForm({ ...form, host: v })} />
         <Field
-          label="Cổng"
+          label="Cổng HTTP (không dùng 554 RTSP)"
           value={String(form.port)}
           onChange={(v) => setForm({ ...form, port: Number(v) || 80 })}
         />
+        <p className="text-xs text-slate-500 sm:col-span-2 lg:col-span-3 -mt-1">
+          CGI snapshot / sự kiện cần cổng web (thường <span className="font-mono">80</span>).
+          Cổng <span className="font-mono">554</span> là RTSP — sẽ không đọc được ảnh.
+        </p>
         <Field
           label="Tài khoản"
           value={form.username}
@@ -218,6 +222,26 @@ function CameraCard({
           <div className="text-sm text-slate-400 font-mono mt-1 break-all">
             {c.host}:{c.port} · {ROLE_LABEL[c.direction_role] || c.direction_role}
           </div>
+          {(c.port === 554 || c.port === 8554) && (
+            <div className="text-xs text-amber-300 mt-2 flex flex-wrap items-center gap-2">
+              Cổng {c.port} là RTSP — snapshot/sự kiện CGI sẽ lỗi.
+              <button
+                type="button"
+                className="underline"
+                onClick={async () => {
+                  try {
+                    await api.updateCamera(c.id, { port: 80 });
+                    onMsg(`Đã đổi cổng «${c.name}» sang HTTP 80`);
+                    await onRefresh();
+                  } catch (e) {
+                    onMsg(String(e));
+                  }
+                }}
+              >
+                Đổi sang cổng 80
+              </button>
+            </div>
+          )}
           <div className="text-xs text-slate-500 mt-2 break-words">
             Khả năng: {(c.caps?.supported_codes || []).length} · Đăng ký sự kiện:{" "}
             {(c.subscribe_codes || []).join(", ") || "—"}

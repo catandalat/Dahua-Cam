@@ -53,6 +53,7 @@ export default function MonitorPage() {
   const [live, setLive] = useState(true);
   const [intervalMs, setIntervalMs] = useState(1500);
   const [snapKey, setSnapKey] = useState(0);
+  const [snapError, setSnapError] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
   const [dets, setDets] = useState<LiveDet[]>([]);
   const [showDets, setShowDets] = useState(true);
@@ -370,9 +371,36 @@ export default function MonitorPage() {
                   src={snapUrl}
                   alt="Quan sát camera"
                   className="w-full h-auto block max-h-[70vh] object-contain bg-black"
-                  onLoad={resizeCanvas}
+                  onLoad={() => {
+                    setSnapError(null);
+                    resizeCanvas();
+                  }}
+                  onError={async () => {
+                    try {
+                      const r = await fetch(snapUrl);
+                      const text = await r.text();
+                      let detail = text.slice(0, 200);
+                      try {
+                        detail = JSON.parse(text).detail || detail;
+                      } catch {
+                        /* keep raw */
+                      }
+                      setSnapError(
+                        r.status === 502
+                          ? `Không đọc được ảnh camera (${r.status}): ${detail}. Kiểm tra cổng HTTP (80), IP và mật khẩu — không dùng cổng RTSP 554.`
+                          : `Lỗi ảnh (${r.status}): ${detail}`,
+                      );
+                    } catch {
+                      setSnapError("Không tải được snapshot từ API");
+                    }
+                  }}
                   draggable={false}
                 />
+                {snapError && (
+                  <div className="absolute inset-x-0 bottom-0 bg-red-950/90 text-red-100 text-xs md:text-sm px-3 py-2 border-t border-red-800">
+                    {snapError}
+                  </div>
+                )}
                 <canvas
                   ref={canvasRef}
                   className="absolute inset-0 w-full h-full cursor-crosshair"

@@ -134,6 +134,21 @@ class CameraLocationIn(BaseModel):
     map_note: str | None = None
 
 
+# Common RTSP / non-HTTP ports that break Digest CGI (snapshot, events).
+_RTSP_LIKE_PORTS = {554, 8554, 5554, 10554}
+
+
+def _reject_rtsp_port(port: int | None) -> None:
+    if port is None:
+        return
+    if port in _RTSP_LIKE_PORTS:
+        raise HTTPException(
+            400,
+            f"Cổng {port} là RTSP, không dùng được cho CGI HTTP. "
+            "Hãy dùng cổng web camera (thường 80 hoặc 443).",
+        )
+
+
 class PlateListIn(BaseModel):
     site_id: UUID
     list_type: str = Field(pattern="^(allow|block)$")
@@ -261,6 +276,7 @@ async def list_cameras(db: AsyncSession = Depends(get_session)) -> list[dict[str
 
 @app.post("/cameras")
 async def create_camera(body: CameraIn, db: AsyncSession = Depends(get_session)) -> dict[str, Any]:
+    _reject_rtsp_port(body.port)
     cam = Camera(
         site_id=body.site_id,
         lane_id=body.lane_id,
@@ -302,6 +318,8 @@ async def update_camera(
     if not cam:
         raise HTTPException(404, "Camera not found")
     data = body.model_dump(exclude_unset=True)
+    if "port" in data:
+        _reject_rtsp_port(data["port"])
     if "direction_role" in data and data["direction_role"] is not None:
         data["direction_role"] = data["direction_role"].value
     if "map_icon" in data and data["map_icon"] is not None:
