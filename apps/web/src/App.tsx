@@ -28,7 +28,6 @@ const links = [
   { to: "/cameras", label: "Camera" },
   { to: "/plates", label: "Danh sách biển" },
   { to: "/registry", label: "Đăng ký xe" },
-  { to: "/watch", label: "Truy vết" },
 ];
 
 export default function App() {
@@ -85,9 +84,9 @@ export default function App() {
         </div>
         <NavLink
           to="/watch"
-          className="text-xs border border-danger/40 text-danger rounded-lg px-2.5 py-1.5"
+          className="text-xs border border-danger/40 text-danger rounded-lg px-2.5 py-1.5 shrink-0"
         >
-          Truy vết
+          Truy vết biển số
         </NavLink>
       </header>
 

@@ -471,8 +471,9 @@ def select_subscribe_codes(
         wanted.extend(P2_EVENT_CODES)
 
     if not supported:
-        # Caps unknown — subscribe P0 at minimum (safe default)
-        return [c.value for c in P0_EVENT_CODES]
+        # Many ITC firmwares don't list event codes in getCaps — subscribe to All
+        # so TrafficManualSnap / Junction / Measurement are not missed.
+        return ["All"]
 
     supported_set = set(supported)
     # Also accept fuzzy: TrafficCarMeasurement1 etc.
@@ -486,7 +487,7 @@ def select_subscribe_codes(
         if any(s.startswith(name) for s in supported_set):
             selected.append(name)
     if not selected:
-        selected = [c.value for c in P0_EVENT_CODES]
+        selected = ["All"]
     # de-dupe preserve order
     seen: set[str] = set()
     out: list[str] = []

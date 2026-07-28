@@ -24,6 +24,7 @@ from domain.models import (
     JamEvent,
     Lane,
     TrafficFlowSample,
+    ViolationEvent,
 )
 from domain.persist import persist_detection, to_relative_snapshot_path
 from domain.session import should_dedupe
@@ -282,6 +283,34 @@ class CameraWorker:
                 return
 
         det = extract_detection(event)
+        # Truncated Dahua packet (common when stream is interrupted mid-event)
+        code_val = event.data.get("Code") if isinstance(event.data, dict) else None
+        if isinstance(code_val, str) and ";data={" in code_val and "Events" not in event.data:
+            logger.warning(
+                "Truncated event on %s (Code=%s…) — bỏ qua, chờ gói đầy đủ",
+                cam.name,
+                code_val[:48],
+            )
+            return
+
+        # Skip empty ManualSnap / noise with neither plate nor real vehicle object
+        ev0 = event.first_event if isinstance(event.first_event, dict) else {}
+        vehicle_obj = ev0.get("Vehicle") if isinstance(ev0.get("Vehicle"), dict) else {}
+        non_motor_obj = ev0.get("NonMotor") if isinstance(ev0.get("NonMotor"), dict) else {}
+        has_vehicle_obj = bool(
+            vehicle_obj.get("ObjectID")
+            or vehicle_obj.get("BoundingBox")
+            or non_motor_obj.get("ObjectID")
+            or non_motor_obj.get("BoundingBox")
+        )
+        if not det.get("plate_number") and not has_vehicle_obj:
+            logger.debug(
+                "Skip empty event cam=%s code=%s",
+                cam.name,
+                det.get("event_code"),
+            )
+            return
+
         # Skip empty noise without plate for non-violation-only events? Keep all with code.
         if should_dedupe(
             plate=det.get("plate_number"),
@@ -333,9 +362,11 @@ class CameraWorker:
         self._last_group_id = det.get("group_id")
         self._last_utc = det.get("event_utc")
         logger.info(
-            "Stored detection cam=%s plate=%s speed=%s status=%s",
+            "Stored detection cam=%s plate=%s class=%s category=%s speed=%s status=%s",
             cam.name,
             det.get("plate_number"),
+            det.get("vehicle_class"),
+            det.get("vehicle_category"),
             det.get("speed"),
             result.get("speed_status"),
         )
@@ -408,6 +439,8 @@ class ListenerSupervisor:
 
     @staticmethod
     def _fingerprint(cam: Camera) -> str:
+        # Do NOT include updated_at — heartbeat/status writes bump it and would
+        # restart the worker every reconcile cycle, dropping live events.
         return "|".join(
             [
                 cam.host,
@@ -417,7 +450,7 @@ class ListenerSupervisor:
                 str(cam.use_https),
                 ",".join(cam.subscribe_codes or []),
                 cam.direction_role,
-                str(cam.updated_at.isoformat() if cam.updated_at else ""),
+                str(bool(cam.enabled)),
             ]
         )
 

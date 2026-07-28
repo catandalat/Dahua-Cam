@@ -37,6 +37,7 @@ class ViolationType(StrEnum):
 class EventCode(StrEnum):
     TRAFFIC_JUNCTION = "TrafficJunction"
     TRAFFIC_CAR_MEASUREMENT = "TrafficCarMeasurement"
+    TRAFFIC_MANUAL_SNAP = "TrafficManualSnap"
     TRAFFIC_OVERSPEED = "TrafficOverSpeed"
     TRAFFIC_UNDERSPEED = "TrafficUnderSpeed"
     TRAFFIC_RETROGRADE = "TrafficRetrograde"
@@ -55,6 +56,7 @@ class EventCode(StrEnum):
 P0_EVENT_CODES = [
     EventCode.TRAFFIC_JUNCTION,
     EventCode.TRAFFIC_CAR_MEASUREMENT,
+    EventCode.TRAFFIC_MANUAL_SNAP,
 ]
 
 P1_EVENT_CODES = [

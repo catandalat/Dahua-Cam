@@ -60,6 +60,8 @@ def extract_detection(event: MultipartEvent) -> dict[str, Any]:
         "Object.PlateNumber",
         "PlateNumber",
         "Object.Text",
+        "TrafficCar.PlateNo",
+        "Plate.PlateNumber",
     )
     plate_color = dig(ev, "TrafficCar.PlateColor", "Object.PlateColor", "PlateColor")
     plate_type = dig(ev, "TrafficCar.PlateType", "Object.PlateType", "PlateType")
@@ -71,11 +73,37 @@ def extract_detection(event: MultipartEvent) -> dict[str, Any]:
     vehicle = dig(ev, "Vehicle", default={}) or {}
     if not isinstance(vehicle, dict):
         vehicle = {}
+    non_motor = dig(ev, "NonMotor", default={}) or {}
+    if not isinstance(non_motor, dict):
+        non_motor = {}
 
     brand = dig(ev, "Vehicle.Text", "TrafficCar.VehicleSign", "Text") or vehicle.get("Text")
     model = dig(ev, "Vehicle.SubText", "SubText") or vehicle.get("SubText")
-    category = dig(ev, "Vehicle.Category", "TrafficCar.Category", "Category", "NonMotor.Category") or vehicle.get(
-        "Category"
+    category = (
+        dig(
+            ev,
+            "Vehicle.Category",
+            "Vehicle.ObjectType",
+            "TrafficCar.Category",
+            "TrafficCar.VehicleType",
+            "TrafficCar.CarType",
+            "Vehicle.VehicleType",
+            "Vehicle.Type",
+            "Category",
+            "NonMotor.Category",
+            "NonMotor.ObjectType",
+            "Object.Category",
+            "Object.ObjectType",
+            "VehicleType",
+            "ObjectType",
+            "TrafficCar.VehicleSize",
+        )
+        or vehicle.get("Category")
+        or vehicle.get("ObjectType")
+        or vehicle.get("VehicleType")
+        or vehicle.get("Type")
+        or non_motor.get("Category")
+        or non_motor.get("ObjectType")
     )
     color = dig(ev, "Vehicle.VehicleColor", "TrafficCar.VehicleColor", "VehicleColor", "NonMotor.Color") or vehicle.get(
         "VehicleColor"
@@ -118,7 +146,24 @@ def extract_detection(event: MultipartEvent) -> dict[str, Any]:
     speed_limit_norm = normalize_speed_limit(speed_limit)
 
     category_s = str(category) if category is not None else None
+    # Dahua sometimes sends numeric CarType — treat as opaque but still classify via ObjectType.
+    if category_s is not None and category_s.isdigit():
+        category_s = dig(ev, "Vehicle.ObjectType", "Vehicle.Category", "Object.ObjectType") or category_s
+        category_s = str(category_s) if category_s is not None else None
+
     vehicle_class = classify_vehicle(category_s, event_code=str(code) if code else None)
+    # If camera didn't send Category but NonMotor object exists, treat as motorcycle.
+    if vehicle_class == "unknown" and non_motor:
+        vehicle_class = "motorcycle"
+    if vehicle_class == "unknown" and str(vehicle.get("ObjectType") or "").lower() == "vehicle":
+        vehicle_class = "car"
+    # Keep a human-readable category even when plate is missing.
+    if (not category_s or str(category_s).lower() in ("unknown", "null")) and vehicle_class != "unknown":
+        category_s = {
+            "car": "Car",
+            "motorcycle": "Motorcycle",
+            "other": "Other",
+        }.get(vehicle_class, category_s)
 
     return {
         "event_code": code,

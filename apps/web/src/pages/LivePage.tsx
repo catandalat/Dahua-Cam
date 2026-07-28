@@ -160,9 +160,20 @@ export default function LivePage() {
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2 flex-wrap">
                 <span className="font-mono text-base md:text-lg tracking-wide">
-                  {d.plate_number || "—"}
+                  {d.plate_number ||
+                    (d.vehicle_class === "motorcycle"
+                      ? "Xe máy (không biển)"
+                      : d.vehicle_class === "car"
+                        ? "Ô tô (không biển)"
+                        : d.vehicle_category || "Không biển")}
                 </span>
-                {d.vehicle_class && (
+                {d.vehicle_class && d.plate_number && (
+                  <Badge
+                    color={d.vehicle_class === "motorcycle" ? "warn" : "accent"}
+                    text={CLASS_LABEL[d.vehicle_class] || d.vehicle_class}
+                  />
+                )}
+                {!d.plate_number && d.vehicle_class && d.vehicle_class !== "unknown" && (
                   <Badge
                     color={d.vehicle_class === "motorcycle" ? "warn" : "accent"}
                     text={CLASS_LABEL[d.vehicle_class] || d.vehicle_class}

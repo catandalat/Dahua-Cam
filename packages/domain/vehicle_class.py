@@ -55,6 +55,10 @@ def classify_vehicle(category: str | None, *, event_code: str | None = None) -> 
         return "unknown"
 
     key = raw.lower().replace(" ", "").replace("_", "").replace("-", "")
+    if key in ("unknown", "null", "none", ""):
+        return "unknown"
+    if key in ("vehicle", "motorvehicle", "automobile"):
+        return "car"
 
     for mk in MOTORCYCLE_KEYWORDS:
         if mk == key or mk in key:

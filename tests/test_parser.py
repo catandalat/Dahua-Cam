@@ -111,3 +111,50 @@ def test_multipart_heartbeat():
     events = parse_multipart_buffer(body, boundary)
     assert events[0].is_heartbeat
     assert events[1].event_code == "TrafficCarMeasurement"
+
+
+def test_code_data_json_block_with_plate():
+    text = """Code=TrafficJunction;action=Pulse;index=0;data={
+   "Name" : "TrafficJunction",
+   "TrafficCar" : {
+      "PlateNumber" : "51F-123.45",
+      "VehicleColor" : "White"
+   },
+   "Vehicle" : {
+      "Category" : "Car",
+      "Text" : "Toyota"
+   },
+   "Speed" : 42,
+   "UTC" : 1700000000
+}
+"""
+    data = kv_lines_to_dict(text)
+    assert dig(data, "Code") == "TrafficJunction"
+    assert dig(data, "Events[0].TrafficCar.PlateNumber") == "51F-123.45"
+    assert dig(data, "Events[0].Vehicle.Category") == "Car"
+    event = MultipartEvent(text=text, data=data)
+    det = extract_detection(event)
+    assert det["event_code"] == "TrafficJunction"
+    assert det["plate_number"] == "51F12345"
+    assert det["vehicle_class"] == "car"
+    assert det["vehicle_category"] == "Car"
+    assert det["speed"] == 42
+
+
+def test_code_data_json_block_without_plate_motorcycle():
+    text = """Code=TrafficJunction;action=Pulse;index=0;data={
+   "NonMotor" : {
+      "Category" : "Motorcycle",
+      "Color" : "Black"
+   },
+   "UTC" : 1700000000
+}
+"""
+    data = kv_lines_to_dict(text)
+    event = MultipartEvent(text=text, data=data)
+    det = extract_detection(event)
+    assert det["plate_number"] is None
+    assert det["vehicle_class"] == "motorcycle"
+    assert det["vehicle_category"] == "Motorcycle"
+    assert det["unlicensed"] is True
+
