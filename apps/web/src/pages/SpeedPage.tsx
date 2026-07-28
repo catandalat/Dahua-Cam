@@ -6,6 +6,7 @@ import {
   SpeedPolicy,
   SpeedStats,
 } from "../api";
+import { ZoomableImage } from "../components/ZoomableImage";
 
 export default function SpeedPage() {
   const [policies, setPolicies] = useState<SpeedPolicy[]>([]);
@@ -255,7 +256,7 @@ export default function SpeedPage() {
               }`}
             >
               {r.image_paths ? (
-                <img
+                <ZoomableImage
                   src={api.mediaUrl(
                     r.id,
                     r.image_paths.overspeed
@@ -267,7 +268,7 @@ export default function SpeedPage() {
                           : Object.keys(r.image_paths)[0],
                   )}
                   alt=""
-                  className="w-16 h-12 object-cover rounded-lg border border-line bg-ink shrink-0"
+                  className="w-16 h-12 object-cover rounded-lg border border-line bg-ink shrink-0 block"
                 />
               ) : (
                 <div className="w-16 h-12 rounded-lg border border-line bg-ink shrink-0" />

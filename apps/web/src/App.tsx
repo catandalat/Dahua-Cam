@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { NavLink, Route, Routes, useLocation } from "react-router-dom";
+import { Navigate, NavLink, Route, Routes, useLocation } from "react-router-dom";
 import AlertBanner from "./components/AlertBanner";
 import LivePage from "./pages/LivePage";
 import InsidePage from "./pages/InsidePage";
@@ -7,9 +7,8 @@ import HistoryPage from "./pages/HistoryPage";
 import StatsPage from "./pages/StatsPage";
 import ViolationsPage from "./pages/ViolationsPage";
 import CamerasPage from "./pages/CamerasPage";
-import PlatesPage from "./pages/PlatesPage";
+import VehiclesPage from "./pages/VehiclesPage";
 import FlowPage from "./pages/FlowPage";
-import RegistryPage from "./pages/RegistryPage";
 import WatchPage from "./pages/WatchPage";
 import MonitorPage from "./pages/MonitorPage";
 import MapPage from "./pages/MapPage";
@@ -23,8 +22,7 @@ const links = [
   { to: "/flow", label: "Lưu lượng" },
   { to: "/violations", label: "Vi phạm" },
   { to: "/cameras", label: "Camera" },
-  { to: "/plates", label: "Danh sách biển" },
-  { to: "/registry", label: "Đăng ký xe" },
+  { to: "/vehicles", label: "Biển số & xe" },
 ];
 
 export default function App() {
@@ -135,8 +133,9 @@ export default function App() {
           <Route path="/flow" element={<FlowPage />} />
           <Route path="/violations" element={<ViolationsPage />} />
           <Route path="/cameras" element={<CamerasPage />} />
-          <Route path="/plates" element={<PlatesPage />} />
-          <Route path="/registry" element={<RegistryPage />} />
+          <Route path="/vehicles" element={<VehiclesPage />} />
+          <Route path="/plates" element={<Navigate to="/vehicles" replace />} />
+          <Route path="/registry" element={<Navigate to="/vehicles" replace />} />
           <Route path="/watch" element={<WatchPage />} />
         </Routes>
       </main>

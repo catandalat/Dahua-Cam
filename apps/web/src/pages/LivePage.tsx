@@ -8,6 +8,7 @@ import {
   Overview,
   WS_URL,
 } from "../api";
+import { ZoomableImage } from "../components/ZoomableImage";
 
 type Tool = "lane_line" | "stop_line" | "region" | "select";
 
@@ -819,10 +820,10 @@ function Thumb({ detection }: { detection: Detection }) {
     return <div className="w-20 h-14 rounded-lg bg-ink border border-line shrink-0" />;
   }
   return (
-    <img
+    <ZoomableImage
       src={api.mediaUrl(detection.id, kind)}
       alt=""
-      className="w-20 h-14 object-cover rounded-lg border border-line shrink-0 bg-ink"
+      className="w-20 h-14 object-cover rounded-lg border border-line shrink-0 bg-ink block"
     />
   );
 }

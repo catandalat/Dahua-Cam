@@ -9,7 +9,8 @@ from domain.overlay_gate import (
 LANE = {
     "id": "1",
     "type": "lane_line",
-    "points": [[130, 5233], [4710, 5461]],
+    # Matches Camera Cổng MobiFone synced DetectLine
+    "points": [[41, 4827], [4735, 5361]],
 }
 
 
@@ -28,7 +29,7 @@ def test_lane_near_accepts():
 
 
 def test_motorcycle_approaching_line_accepts():
-    # Real skip case: bike bottom ~4552, plate ~4416 — near corridor of lane y~5300
+    # Bike plate near corridor of lane y~5300
     assert detection_hits_overlay(
         [LANE],
         vehicle_bbox=[2664, 2808, 4776, 4552],
@@ -37,11 +38,71 @@ def test_motorcycle_approaching_line_accepts():
     )
 
 
-def test_motorcycle_midframe_accepts_with_wide_threshold():
+def test_clothing_false_ocr_behind_line_rejects():
+    # Runtime evidence: 57R6409 ManualSnap — tall plate on shirt, ~1418px before line.
+    assert not detection_hits_overlay(
+        [LANE],
+        vehicle_bbox=[304, 1856, 3328, 3856],
+        plate_bbox=[1168, 3240, 1360, 3528],
+        vehicle_class="car",
+    )
+
+
+def test_approaching_car_wide_plate_accepts():
+    # 92G15255 / 49A81434 — wide plate ManualSnap while approaching
     assert detection_hits_overlay(
         [LANE],
-        vehicle_bbox=[3000, 3500, 3800, 4300],
+        vehicle_bbox=[496, 1848, 3312, 3880],
+        plate_bbox=[2704, 3352, 3024, 3544],
+        vehicle_class="car",
+    )
+    assert detection_hits_overlay(
+        [LANE],
+        plate_bbox=[3416, 3168, 3720, 3344],
+        vehicle_class="car",
+    )
+
+
+def test_inbound_moto_plate_pattern_accepts_early():
+    # Tall plate + VN 9-char moto number → allow approach ManualSnap (~1400px)
+    assert detection_hits_overlay(
+        [LANE],
+        plate_bbox=[1176, 3240, 1368, 3520],
         vehicle_class="motorcycle",
+        plate_number="59B123456",
+    )
+    # Tall 8-char valid plate (common moto OCR)
+    assert detection_hits_overlay(
+        [LANE],
+        plate_bbox=[1176, 3240, 1368, 3520],
+        plate_number="59R45429",
+    )
+
+
+def test_clothing_car_shaped_tall_plate_still_rejects():
+    # 57R6409 clothing: tall bbox but car-shaped 7-char number, ~1418px out
+    assert not detection_hits_overlay(
+        [LANE],
+        vehicle_bbox=[304, 1856, 3328, 3856],
+        plate_bbox=[1168, 3240, 1360, 3528],
+        plate_number="57R6409",
+    )
+
+
+def test_past_line_late_snap_accepts():
+    # 49B02391 — plate already past the line (late snap)
+    assert detection_hits_overlay(
+        [LANE],
+        plate_bbox=[2112, 6528, 2576, 6960],
+        vehicle_class="car",
+    )
+
+
+def test_real_junction_on_line_accepts():
+    assert detection_hits_overlay(
+        [LANE],
+        plate_bbox=[1376, 4992, 1776, 5360],
+        vehicle_class="car",
     )
 
 
@@ -70,9 +131,9 @@ def test_region_contains():
 
 
 def test_noise_and_passage_codes():
-    assert is_noise_event_code("TrafficVehiclePosition")
-    assert is_noise_event_code("TrafficManualSnap")
+    assert is_noise_event_code("TrafficVehicleInParkingSpace")
+    assert not is_noise_event_code("TrafficManualSnap")
     assert not is_noise_event_code("TrafficJunction")
     assert is_passage_event_code("TrafficJunction")
     assert is_passage_event_code("TrafficCarMeasurement")
-    assert not is_passage_event_code("TrafficManualSnap")
+    assert is_passage_event_code("TrafficManualSnap")

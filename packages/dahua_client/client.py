@@ -335,7 +335,8 @@ class DahuaClient:
     ) -> str:
         """Push overlay lane into VideoAnalyseRule DetectLine (Dahua 0–8192).
 
-        Direction=Both is required for entry+exit; Obverse-only misses vehicles leaving.
+        Bidirectional uses Obverse+Reverse. SnapMotor enables motorcycle body snaps.
+        NoPlateConfirmFrame is lowered so unread-plate vehicles still emit events.
         """
         x1, y1 = int(point_a[0]), int(point_a[1])
         x2, y2 = int(point_b[0]), int(point_b[1])
@@ -347,12 +348,46 @@ class DahuaClient:
             "VideoAnalyseRule[0][0].Config.DetectLine[1][1]": str(y2),
             "VideoAnalyseRule[0][0].Config.SnapMotor": "1" if snap_motor else "0",
             "VideoAnalyseRule[0][0].Config.LastSnapPosition": "50",
+            # Faster no-plate / motorcycle body confirmation (firmware default was 20)
+            "VideoAnalyseRule[0][0].Config.NoPlateConfirmFrame": "3",
+            "VideoAnalyseRule[0][0].Config.DelayTime": "0",
             "VideoAnalyseRule[0][0].Enable": "true",
         }
         if bidirectional:
-            params["VideoAnalyseRule[0][0].Config.Direction[0]"] = "Both"
+            # Dahua expects Obverse+Reverse pair for 2-way snap
+            params["VideoAnalyseRule[0][0].Config.Direction[0]"] = "Obverse"
             params["VideoAnalyseRule[0][0].Config.Direction[1]"] = "Reverse"
-        return await self.get_text("/cgi-bin/configManager.cgi", params)
+        # Do not push ObjectTypes — NonMotor as extra type is rejected by this firmware;
+        # SnapMotor=1 is the supported motorcycle snap switch for TrafficTollGate.
+        rule_res = await self.get_text("/cgi-bin/configManager.cgi", params)
+        # Lane Type=Light-duty suppresses motorcycle events; Mix allows cars + bikes.
+        # Also widen DetectRegion and align global lane DetectLine with overlay.
+        try:
+            await self.get_text(
+                "/cgi-bin/configManager.cgi",
+                {
+                    "action": "setConfig",
+                    "VideoAnalyseGlobal[0].Scene.Detail.Lanes[0].Type": "Mix",
+                    "VideoAnalyseGlobal[0].Scene.Detail.Judgment": "Region",
+                    "VideoAnalyseGlobal[0].Scene.Detail.ConfidenceFilter": "20",
+                    "VideoAnalyseGlobal[0].Scene.Detail.Lanes[0].DetectLine[0][0]": str(x1),
+                    "VideoAnalyseGlobal[0].Scene.Detail.Lanes[0].DetectLine[0][1]": str(y1),
+                    "VideoAnalyseGlobal[0].Scene.Detail.Lanes[0].DetectLine[1][0]": str(x2),
+                    "VideoAnalyseGlobal[0].Scene.Detail.Lanes[0].DetectLine[1][1]": str(y2),
+                    "VideoAnalyseGlobal[0].Scene.Detail.DetectRegions[0].Enable": "true",
+                    "VideoAnalyseGlobal[0].Scene.Detail.DetectRegions[0].DetectRegion[0][0]": "0",
+                    "VideoAnalyseGlobal[0].Scene.Detail.DetectRegions[0].DetectRegion[0][1]": "4300",
+                    "VideoAnalyseGlobal[0].Scene.Detail.DetectRegions[0].DetectRegion[1][0]": "8191",
+                    "VideoAnalyseGlobal[0].Scene.Detail.DetectRegions[0].DetectRegion[1][1]": "4300",
+                    "VideoAnalyseGlobal[0].Scene.Detail.DetectRegions[0].DetectRegion[2][0]": "8191",
+                    "VideoAnalyseGlobal[0].Scene.Detail.DetectRegions[0].DetectRegion[2][1]": "8191",
+                    "VideoAnalyseGlobal[0].Scene.Detail.DetectRegions[0].DetectRegion[3][0]": "0",
+                    "VideoAnalyseGlobal[0].Scene.Detail.DetectRegions[0].DetectRegion[3][1]": "8191",
+                },
+            )
+        except Exception:
+            pass
+        return rule_res
 
     async def snapshot(self, channel: int = 1) -> bytes:
         async with self._client(timeout=15.0) as client:

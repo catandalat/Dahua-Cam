@@ -26,14 +26,17 @@ from domain.models import (
     Lane,
     TrafficFlowSample,
     VehicleDetection,
+    VehicleSession,
     ViolationEvent,
 )
+from domain.schemas import SessionStatus
 from domain.overlay_gate import (
     detection_hits_overlay,
     is_noise_event_code,
     is_passage_event_code,
     overlay_gate_required,
 )
+from domain.plate import is_valid_vn_plate
 from domain.persist import persist_detection, to_relative_snapshot_path
 from domain.session import should_dedupe
 from domain.settings import get_settings
@@ -44,6 +47,35 @@ logging.basicConfig(
 )
 logger = logging.getLogger("listener")
 
+# #region agent log
+_DEBUG_LOG_PATH = Path("/app/.cursor/debug-dc404e.log")
+if not _DEBUG_LOG_PATH.parent.exists():
+    _DEBUG_LOG_PATH = Path("/Users/hoanhkiet/Documents/GitHub/Dahua-Cam/.cursor/debug-dc404e.log")
+
+
+def _agent_log(hypothesis_id: str, location: str, message: str, data: dict[str, Any] | None = None) -> None:
+    import json
+    import time
+
+    try:
+        _DEBUG_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "sessionId": "dc404e",
+            "runId": "post-fix",
+            "hypothesisId": hypothesis_id,
+            "location": location,
+            "message": message,
+            "data": data or {},
+            "timestamp": int(time.time() * 1000),
+        }
+        with _DEBUG_LOG_PATH.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(payload, ensure_ascii=False, default=str) + "\n")
+    except Exception:
+        pass
+
+
+# #endregion
+
 
 class CameraWorker:
     def __init__(self, camera_id: uuid.UUID):
@@ -53,6 +85,10 @@ class CameraWorker:
         self._last_plate: str | None = None
         self._last_group_id: int | None = None
         self._last_utc: datetime | None = None
+        # #region agent log
+        self._hb_count = 0
+        self._event_count = 0
+        # #endregion
 
     def start(self) -> None:
         self._stop.clear()
@@ -143,6 +179,20 @@ class CameraWorker:
                 if self._stop.is_set():
                     break
                 if event.is_heartbeat:
+                    # #region agent log
+                    self._hb_count += 1
+                    if self._hb_count % 6 == 1:
+                        _agent_log(
+                            "H1",
+                            "listener.attach_events",
+                            "heartbeat_alive",
+                            {
+                                "hb": self._hb_count,
+                                "events": self._event_count,
+                                "cam": cam.name,
+                            },
+                        )
+                    # #endregion
                     if pending_event is not None:
                         try:
                             await self._handle_event(cam, pending_event)
@@ -152,6 +202,21 @@ class CameraWorker:
                     await self._set_status("connected")
                     continue
                 await self._set_status("connected")
+                # #region agent log
+                self._event_count += 1
+                _agent_log(
+                    "H1",
+                    "listener.attach_events",
+                    "non_heartbeat_part",
+                    {
+                        "n": self._event_count,
+                        "code": event.event_code,
+                        "has_events": bool(event.data.get("Events") if isinstance(event.data, dict) else False),
+                        "img_n": len(event.images or []),
+                        "keys": list(event.data.keys())[:12] if isinstance(event.data, dict) else [],
+                    },
+                )
+                # #endregion
                 # Dahua often sends JPEG in a following multipart part with no event JSON
                 has_event_body = bool(event.data.get("Events") or event.event_code)
                 image_only = bool(event.images) and not has_event_body and not (event.text or "").strip()
@@ -205,7 +270,7 @@ class CameraWorker:
                         "/cgi-bin/configManager.cgi",
                         {
                             "action": "setConfig",
-                            "VideoAnalyseRule[0][0].Config.Direction[0]": "Both",
+                            "VideoAnalyseRule[0][0].Config.Direction[0]": "Obverse",
                             "VideoAnalyseRule[0][0].Config.Direction[1]": "Reverse",
                             "VideoAnalyseRule[0][0].Config.SnapMotor": "1",
                         },
@@ -247,6 +312,21 @@ class CameraWorker:
                 bidirectional,
                 (res or "").strip(),
             )
+            # #region agent log
+            _agent_log(
+                "H4",
+                "listener._sync_camera_gate_rule",
+                "detectline_synced",
+                {
+                    "role": role,
+                    "bidirectional": bidirectional,
+                    "pts": [pts[0], pts[1]],
+                    "result": (res or "").strip(),
+                    "direction_mode": "Obverse+Reverse" if bidirectional else "single",
+                    "lane_type": "Mix",
+                },
+            )
+            # #endregion
         except Exception as exc:
             logger.warning("DetectLine sync failed cam=%s: %s", cam.name, exc)
 
@@ -398,6 +478,43 @@ class CameraWorker:
                 return
 
         det = extract_detection(event)
+        # #region agent log
+        _pb = det.get("plate_bbox")
+        _pb_aspect = None
+        if isinstance(_pb, (list, tuple)) and len(_pb) >= 4:
+            try:
+                _pw = abs(float(_pb[2]) - float(_pb[0]))
+                _ph = abs(float(_pb[3]) - float(_pb[1]))
+                _pb_aspect = round(_ph / _pw, 3) if _pw > 0 else None
+            except (TypeError, ValueError, ZeroDivisionError):
+                _pb_aspect = None
+        _agent_log(
+            "H7",
+            "listener._handle_event",
+            "extracted",
+            {
+                "raw_code": code,
+                "det_code": det.get("event_code"),
+                "plate": det.get("plate_number"),
+                "vclass": det.get("vehicle_class"),
+                "category": det.get("vehicle_category"),
+                "snap_cat": det.get("snap_category"),
+                "vsize": det.get("vehicle_size"),
+                "vb": det.get("vehicle_bbox"),
+                "pb": _pb,
+                "pb_aspect": _pb_aspect,
+                "unlicensed": det.get("unlicensed"),
+                "trigger_occur": det.get("trigger_occur"),
+                "junction_dir": det.get("junction_direction"),
+                "vehicle_dir": det.get("vehicle_direction"),
+                "has_nonmotor_obj": bool(
+                    (event.first_event or {}).get("NonMotor")
+                    if isinstance(event.first_event, dict)
+                    else False
+                ),
+            },
+        )
+        # #endregion
         # Truncated Dahua packet (common when stream is interrupted mid-event)
         code_val = event.data.get("Code") if isinstance(event.data, dict) else None
         if isinstance(code_val, str) and ";data={" in code_val and "Events" not in event.data:
@@ -406,11 +523,71 @@ class CameraWorker:
                 cam.name,
                 code_val[:48],
             )
+            # #region agent log
+            _agent_log("H3", "listener._handle_event", "truncated_skip", {"code": code_val[:80]})
+            # #endregion
             return
 
         code_name = str(det.get("event_code") or "").split(";")[0].strip()
-        if is_noise_event_code(code_name):
+        # TrafficVehiclePosition / TrafficManualSnap: keep when plate or body present.
+        # Empty ManualSnap floods the stream and must stay filtered.
+        if code_name in ("TrafficVehiclePosition", "TrafficManualSnap"):
+            if not (det.get("plate_number") or det.get("vehicle_bbox") or det.get("plate_bbox")):
+                logger.info("Skip empty %s cam=%s", code_name, cam.name)
+                # #region agent log
+                _agent_log("H3", "listener._handle_event", "position_empty_skip", {"code": code_name})
+                # #endregion
+                return
+            # ManualSnap without plate is usually UI/forced noise — require plate
+            # OR motorcycle/NonMotor body near the gate line.
+            if code_name == "TrafficManualSnap" and not det.get("plate_number"):
+                is_bike = str(det.get("vehicle_class") or "").lower() in (
+                    "motorcycle",
+                    "nonmotor",
+                    "bike",
+                ) or bool(
+                    (event.first_event or {}).get("NonMotor")
+                    if isinstance(event.first_event, dict)
+                    else False
+                )
+                if not is_bike:
+                    logger.info("Skip ManualSnap no-plate car cam=%s", cam.name)
+                    # #region agent log
+                    _agent_log(
+                        "H3",
+                        "listener._handle_event",
+                        "manual_snap_noise_skip",
+                        {"vb": det.get("vehicle_bbox"), "vclass": det.get("vehicle_class")},
+                    )
+                    # #endregion
+                    return
+                # #region agent log
+                _agent_log(
+                    "H10",
+                    "listener._handle_event",
+                    "manual_snap_bike_body",
+                    {"vb": det.get("vehicle_bbox"), "vclass": det.get("vehicle_class")},
+                )
+                # #endregion
+            # #region agent log
+            _agent_log(
+                "H6",
+                "listener._handle_event",
+                "special_code_kept",
+                {
+                    "code": code_name,
+                    "plate": det.get("plate_number"),
+                    "vclass": det.get("vehicle_class"),
+                    "vb": det.get("vehicle_bbox"),
+                    "vdir": det.get("vehicle_direction"),
+                },
+            )
+            # #endregion
+        elif is_noise_event_code(code_name):
             logger.info("Skip noise event cam=%s code=%s", cam.name, code_name)
+            # #region agent log
+            _agent_log("H3", "listener._handle_event", "noise_skip", {"code": code_name})
+            # #endregion
             return
 
         # Skip empty / ghost frames with neither plate nor real vehicle/NonMotor object
@@ -427,22 +604,86 @@ class CameraWorker:
         is_nonmotor = bool(non_motor_obj) or str(det.get("vehicle_class") or "") == "motorcycle" or str(
             det.get("snap_category") or ""
         ).lower() in ("nonmotor", "motorcycle")
-        # Unlicensed ghosts — require plate, except NonMotor (xe máy often unread plate)
-        if not has_plate and det.get("unlicensed") and not is_nonmotor:
-            logger.debug("Skip unlicensed without plate cam=%s code=%s", cam.name, code_name)
-            return
+        # Real vehicles without a readable plate still count (bbox present).
+        # Only drop empty/ghost frames with neither plate nor vehicle body.
         if not has_plate and not has_vehicle_obj:
             logger.debug(
                 "Skip empty event cam=%s code=%s",
                 cam.name,
                 det.get("event_code"),
             )
+            # #region agent log
+            _agent_log("H3", "listener._handle_event", "empty_skip", {"code": code_name})
+            # #endregion
             return
         # Prefer junction/measurement; other codes only if plate was actually read
         # (NonMotor violation codes allowed via is_passage_event_code)
         if not is_passage_event_code(code_name) and not has_plate and not is_nonmotor:
             logger.debug("Skip non-passage without plate cam=%s code=%s", cam.name, code_name)
+            # #region agent log
+            _agent_log("H3", "listener._handle_event", "non_passage_skip", {"code": code_name})
+            # #endregion
             return
+
+        # Reject OCR garbage that is not a plausible VN plate (OO8313, K8760454, …)
+        if has_plate and not is_valid_vn_plate(str(det.get("plate_number") or "")):
+            logger.info(
+                "Skip invalid plate cam=%s plate=%s code=%s",
+                cam.name,
+                det.get("plate_number"),
+                code_name,
+            )
+            # #region agent log
+            _agent_log(
+                "H9",
+                "listener._handle_event",
+                "invalid_plate_skip",
+                {
+                    "plate": det.get("plate_number"),
+                    "code": code_name,
+                    "pconf": det.get("plate_confidence"),
+                    "pb": det.get("plate_bbox"),
+                },
+            )
+            # #endregion
+            return
+
+        # Clothing false-OCR on this camera is almost always Yellow + ManualSnap
+        # while still far above the lane (e.g. 57R6409). Real moto plates are not yellow.
+        plate_color = str(det.get("plate_color") or "").strip().lower()
+        if (
+            code_name == "TrafficManualSnap"
+            and has_plate
+            and plate_color == "yellow"
+            and str(det.get("vehicle_class") or "").lower() in ("motorcycle", "car", "unknown", "")
+        ):
+            pb = det.get("plate_bbox")
+            # Only apply when plate is clearly on the approach side / mid-frame
+            if isinstance(pb, (list, tuple)) and len(pb) >= 4:
+                try:
+                    mid_y = (float(pb[1]) + float(pb[3])) / 2.0
+                except (TypeError, ValueError):
+                    mid_y = 9999.0
+                if mid_y < 4200:
+                    logger.info(
+                        "Skip yellow mid-frame ManualSnap cam=%s plate=%s",
+                        cam.name,
+                        det.get("plate_number"),
+                    )
+                    # #region agent log
+                    _agent_log(
+                        "H10",
+                        "listener._handle_event",
+                        "yellow_midframe_skip",
+                        {
+                            "plate": det.get("plate_number"),
+                            "pb": pb,
+                            "pcolor": det.get("plate_color"),
+                            "vclass": det.get("vehicle_class"),
+                        },
+                    )
+                    # #endregion
+                    return
 
         # Gate by drawn lane / stop / region overlays (Dahua 0–8192)
         async with SessionLocal() as db:
@@ -459,7 +700,53 @@ class CameraWorker:
                 vehicle_bbox=det.get("vehicle_bbox"),
                 plate_bbox=det.get("plate_bbox"),
                 vehicle_class=str(det.get("vehicle_class") or "") or None,
+                plate_number=str(det.get("plate_number") or "") or None,
             )
+            # #region agent log
+            _ov_dist = None
+            _ov_side = None
+            try:
+                from domain.overlay_gate import min_dist_to_line, _point_side_of_line, _shape_points
+                from domain.plate import is_vn_motorcycle_plate
+
+                _pb = det.get("plate_bbox") or det.get("vehicle_bbox")
+                for _s in shapes:
+                    if _s.get("type") in ("lane_line", "stop_line"):
+                        _pts = _shape_points(_s)
+                        if len(_pts) >= 2:
+                            _ax, _ay = _pts[0]
+                            _bx, _by = _pts[1]
+                            _ov_dist = min_dist_to_line(_pb, _ax, _ay, _bx, _by)
+                            if _pb and len(_pb) >= 4:
+                                _mx = (float(_pb[0]) + float(_pb[2])) / 2.0
+                                _my = (float(_pb[1]) + float(_pb[3])) / 2.0
+                                _ov_side = _point_side_of_line(_mx, _my, _ax, _ay, _bx, _by)
+                            break
+            except Exception:
+                is_vn_motorcycle_plate = lambda *_a, **_k: False  # type: ignore
+            _agent_log(
+                "H10",
+                "listener._handle_event",
+                "overlay_decision",
+                {
+                    "plate": det.get("plate_number"),
+                    "code": code_name,
+                    "hit": hit,
+                    "dist": round(_ov_dist, 1) if _ov_dist is not None else None,
+                    "side": int(_ov_side) if _ov_side is not None else None,
+                    "pb": det.get("plate_bbox"),
+                    "vb": det.get("vehicle_bbox"),
+                    "pconf": det.get("plate_confidence"),
+                    "rconf": det.get("recognise_conf"),
+                    "vclass": det.get("vehicle_class"),
+                    "vdir": det.get("vehicle_direction"),
+                    "moto_plate": bool(
+                        det.get("plate_number")
+                        and is_vn_motorcycle_plate(str(det.get("plate_number") or ""))
+                    ),
+                },
+            )
+            # #endregion
             if not hit:
                 logger.info(
                     "Skip off-lane cam=%s plate=%s code=%s vb=%s pb=%s",
@@ -469,6 +756,20 @@ class CameraWorker:
                     det.get("vehicle_bbox"),
                     det.get("plate_bbox"),
                 )
+                # #region agent log
+                _agent_log(
+                    "H8",
+                    "listener._handle_event",
+                    "overlay_reject",
+                    {
+                        "plate": det.get("plate_number"),
+                        "code": code_name,
+                        "vb": det.get("vehicle_bbox"),
+                        "pb": det.get("plate_bbox"),
+                        "dist": round(_ov_dist, 1) if _ov_dist is not None else None,
+                    },
+                )
+                # #endregion
                 return
 
         if should_dedupe(
@@ -484,25 +785,52 @@ class CameraWorker:
                 det.get("plate_number"),
                 det.get("group_id"),
             )
+            # #region agent log
+            _agent_log("H5", "listener._handle_event", "dedupe_skip", {"plate": det.get("plate_number")})
+            # #endregion
             return
 
-        # DB cooldown: same plate on this camera within 90s (survives listener restart)
+        # DB cooldown: suppress sticky re-fires of the same plate (~12s).
+        # Do NOT use 90s — that blocks real exits (matcher needs ≥60s dwell).
+        # If the plate is already INSIDE, never cooldown-skip (needed for exit).
         plate = det.get("plate_number")
         if plate:
-            since = datetime.now(timezone.utc) - timedelta(seconds=90)
             async with SessionLocal() as db:
-                recent = await db.scalar(
-                    select(VehicleDetection.id)
+                inside = await db.scalar(
+                    select(VehicleSession.id)
                     .where(
-                        VehicleDetection.camera_id == cam.id,
-                        VehicleDetection.plate_number == plate,
-                        VehicleDetection.created_at >= since,
+                        VehicleSession.site_id == cam.site_id,
+                        VehicleSession.plate_number == plate,
+                        VehicleSession.status == SessionStatus.INSIDE.value,
                     )
                     .limit(1)
                 )
-            if recent:
-                logger.info("Cooldownoldown skip plate=%s cam=%s (<90s)", plate, cam.name)
-                return
+                if inside:
+                    # #region agent log
+                    _agent_log(
+                        "H5",
+                        "listener._handle_event",
+                        "cooldown_bypass_inside",
+                        {"plate": plate},
+                    )
+                    # #endregion
+                else:
+                    since = datetime.now(timezone.utc) - timedelta(seconds=12)
+                    recent = await db.scalar(
+                        select(VehicleDetection.id)
+                        .where(
+                            VehicleDetection.camera_id == cam.id,
+                            VehicleDetection.plate_number == plate,
+                            VehicleDetection.created_at >= since,
+                        )
+                        .limit(1)
+                    )
+                    if recent:
+                        logger.info("Cooldownoldown skip plate=%s cam=%s (<12s)", plate, cam.name)
+                        # #region agent log
+                        _agent_log("H5", "listener._handle_event", "cooldown_skip", {"plate": plate, "window_s": 12})
+                        # #endregion
+                        return
 
         image_paths = await self._save_images(event, cam.id)
         source_jpeg = None
@@ -554,6 +882,24 @@ class CameraWorker:
             det.get("speed"),
             result.get("speed_status"),
         )
+        # #region agent log
+        _agent_log(
+            "H1",
+            "listener._handle_event",
+            "stored_ok",
+            {
+                "plate": det.get("plate_number"),
+                "code": det.get("event_code"),
+                "vclass": det.get("vehicle_class"),
+                "unlicensed": bool(det.get("unlicensed")),
+                "vehicle_dir": det.get("vehicle_direction"),
+                "trigger_occur": det.get("trigger_occur"),
+                "passage": result.get("passage_direction"),
+                "session_status": result.get("session_status"),
+                "det_id": str(result.get("detection_id") or result.get("id") or ""),
+            },
+        )
+        # #endregion
 
     async def _save_images(self, event: MultipartEvent, camera_id: uuid.UUID) -> dict[str, str]:
         usable = [img for img in (event.images or []) if img.data and len(img.data) > 500]

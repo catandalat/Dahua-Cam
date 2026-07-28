@@ -49,9 +49,13 @@ def should_dedupe(
     last_plate: str | None,
     last_group_id: int | None,
     last_utc: datetime | None,
-    window_seconds: float = 90.0,
+    window_seconds: float = 12.0,
 ) -> bool:
-    """Suppress near-duplicate fires for same plate/group (parked / sticky ANPR)."""
+    """Suppress near-duplicate fires for same plate/group (parked / sticky ANPR).
+
+    Window is short (~12s) so a real exit pass after ≥60s dwell is not blocked.
+    Same GroupID always dedupes (multi-part snap of one crossing).
+    """
     np = normalize_plate(plate)
     lp = normalize_plate(last_plate)
     if not np or not lp or np != lp:

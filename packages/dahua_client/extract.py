@@ -197,6 +197,12 @@ def extract_detection(event: MultipartEvent) -> dict[str, Any]:
     seatbelt_main, seatbelt_sub, calling, smoking, sun_shade = _seat_flags(ev)
 
     plate_norm = normalize_plate(str(plate) if plate is not None else None)
+    plate_confidence = _as_float(
+        dig(ev, "Object.Confidence", "Plate.Confidence", "NonMotor.Object.Confidence")
+    )
+    recognise_conf = _as_float(
+        dig(ev, "Object.RecogniseConf", "Plate.RecogniseConf", "NonMotor.Object.RecogniseConf")
+    )
     unlicensed = False
     if plate is None or plate_norm is None or str(plate).strip() in ("", "unknown", "Unknown", "-"):
         if code and ("Traffic" in str(code) or "Junction" in str(code) or "Measurement" in str(code)):
@@ -213,6 +219,14 @@ def extract_detection(event: MultipartEvent) -> dict[str, Any]:
     speed_limit_norm = normalize_speed_limit(speed_limit)
 
     category_s = clean_camera_attr(category)
+    plate_bbox_vals = _bbox(
+        ev,
+        "Object.BoundingBox",
+        "TrafficCar.BoundingBox",
+        "Plate.BoundingBox",
+        "NonMotor.Object.BoundingBox",
+        "NonMotor.Plate.BoundingBox",
+    )
     vehicle_class = classify_vehicle(
         category_s,
         event_code=str(code) if code else None,
@@ -220,8 +234,12 @@ def extract_detection(event: MultipartEvent) -> dict[str, Any]:
         vehicle_size=vehicle_size,
         object_type=object_type,
         has_non_motor=bool(non_motor),
+        plate_number=plate_norm,
+        plate_bbox=plate_bbox_vals,
     )
-    if (not category_s) and vehicle_class != "unknown":
+    if vehicle_class == "motorcycle":
+        category_s = category_s or "Motorcycle"
+    elif (not category_s) and vehicle_class != "unknown":
         category_s = {
             "car": vehicle_size or "Car",
             "motorcycle": "Motorcycle",
@@ -235,6 +253,8 @@ def extract_detection(event: MultipartEvent) -> dict[str, Any]:
         "plate_number": plate_norm,
         "plate_color": plate_color,
         "plate_type": clean_camera_attr(plate_type),
+        "plate_confidence": plate_confidence,
+        "recognise_conf": recognise_conf,
         "front_plate_number": normalize_plate(str(front_plate)) if front_plate else None,
         "back_plate_number": normalize_plate(str(back_plate)) if back_plate else None,
         "front_plate_color": clean_camera_attr(front_plate_color),
@@ -264,14 +284,7 @@ def extract_detection(event: MultipartEvent) -> dict[str, Any]:
         "sun_shade": sun_shade,
         "country": dig(ev, "Object.Country", "Country", "TrafficCar.Country"),
         "rec_no": dig(ev, "TrafficCar.RecNo", "RecNo", "EventID"),
-        "plate_bbox": _bbox(
-            ev,
-            "Object.BoundingBox",
-            "TrafficCar.BoundingBox",
-            "NonMotor.Object.BoundingBox",
-            "NonMotor.Plate.BoundingBox",
-            "Plate.BoundingBox",
-        ),
+        "plate_bbox": plate_bbox_vals,
         "vehicle_bbox": _bbox(
             ev,
             "Vehicle.BoundingBox",

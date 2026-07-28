@@ -9,9 +9,20 @@ from typing import Any, Sequence
 Point = tuple[float, float]
 BBox = Sequence[float]  # [x1, y1, x2, y2]
 
-# ~20% of frame — motorcycles are small and often snap slightly off the painted line
-DEFAULT_LINE_THRESHOLD = 1600.0
-MOTORCYCLE_LINE_THRESHOLD = 2200.0
+# Plate must be close to the painted line on the approach side.
+# Evidence: clothing false-OCR 57R6409 was ~1418px away (tall plate); real on-line ~10–680px.
+DEFAULT_LINE_THRESHOLD = 1000.0
+MOTORCYCLE_LINE_THRESHOLD = 1200.0
+# Wide (car) plates often OCR via ManualSnap while still approaching — allow earlier.
+# Evidence: 92G15255 dist≈1576 pconf=70; 49A81434 dist≈1855 — both rejected under 1000.
+APPROACH_CAR_LINE_THRESHOLD = 2000.0
+# Body-only / unread plate: must be close to the line (mid-frame people ~1100px out).
+NOPLATE_LINE_THRESHOLD = 900.0
+# After the vehicle has crossed, late snaps can sit further past the line (e.g. 49B02391).
+PAST_LINE_THRESHOLD = 2800.0
+# Inbound motorcycles OCR via ManualSnap while still approaching (tall plate).
+# Clothing false OCR (57R6409) was 7-char car-shaped + tall — not moto pattern.
+APPROACH_MOTO_LINE_THRESHOLD = 2000.0
 
 
 def bbox_center(bbox: BBox | None) -> Point | None:
@@ -55,6 +66,11 @@ def _dist_point_to_segment(px: float, py: float, ax: float, ay: float, bx: float
     return math.hypot(px - cx, py - cy)
 
 
+def _point_side_of_line(px: float, py: float, ax: float, ay: float, bx: float, by: float) -> float:
+    """Signed cross product; >0 = camera-near / past side for typical L→R gate lines."""
+    return (bx - ax) * (py - ay) - (by - ay) * (px - ax)
+
+
 def _point_in_polygon(px: float, py: float, poly: Sequence[Sequence[float]]) -> bool:
     """Ray casting; poly is [[x,y], ...]."""
     if len(poly) < 3:
@@ -81,13 +97,51 @@ def _shape_points(shape: dict[str, Any]) -> list[list[float]]:
     return out
 
 
+def min_dist_to_line(bbox: BBox | None, ax: float, ay: float, bx: float, by: float) -> float | None:
+    if not bbox or len(bbox) < 4:
+        return None
+    dists = [_dist_point_to_segment(px, py, ax, ay, bx, by) for px, py in _bbox_sample_points(bbox)]
+    return min(dists) if dists else None
+
+
 def _bbox_near_line(bbox: BBox | None, ax: float, ay: float, bx: float, by: float, threshold: float) -> bool:
+    d = min_dist_to_line(bbox, ax, ay, bx, by)
+    return d is not None and d <= threshold
+
+
+def _bbox_hits_line_segment(
+    bbox: BBox | None,
+    ax: float,
+    ay: float,
+    bx: float,
+    by: float,
+    *,
+    near_threshold: float,
+    past_threshold: float,
+) -> bool:
+    """Keep if near the line, or already past it (late snap after crossing)."""
     if not bbox or len(bbox) < 4:
         return False
     for px, py in _bbox_sample_points(bbox):
-        if _dist_point_to_segment(px, py, ax, ay, bx, by) <= threshold:
+        dist = _dist_point_to_segment(px, py, ax, ay, bx, by)
+        if dist <= near_threshold:
+            return True
+        if _point_side_of_line(px, py, ax, ay, bx, by) > 0 and dist <= past_threshold:
             return True
     return False
+
+
+def _plate_aspect_hw(plate_bbox: BBox | None) -> float | None:
+    if not plate_bbox or len(plate_bbox) < 4:
+        return None
+    try:
+        w = abs(float(plate_bbox[2]) - float(plate_bbox[0]))
+        h = abs(float(plate_bbox[3]) - float(plate_bbox[1]))
+    except (TypeError, ValueError):
+        return None
+    if w < 1:
+        return None
+    return h / w
 
 
 def detection_hits_overlay(
@@ -97,25 +151,51 @@ def detection_hits_overlay(
     plate_bbox: BBox | None = None,
     line_threshold: float | None = None,
     vehicle_class: str | None = None,
+    plate_number: str | None = None,
 ) -> bool:
     """
     Return True if detection should be kept given overlay shapes.
 
     Rules (when overlay has shapes):
     - region: keep if vehicle/plate sample point is inside any region
-    - lane_line / stop_line: keep if vehicle or plate bbox is within threshold
-      of any line segment (corners + bottom-center)
-    - motorcycles use a wider threshold (small bbox / late plate read)
+    - lane_line / stop_line: when a plate bbox exists, gate on the plate only
+      (giant person/vehicle boxes must not pull mid-frame OCR across the line)
+    - VN motorcycle plate pattern: wider approach threshold (inbound ManualSnap)
+    - tall non-moto plates (clothing OCR): strict near-line threshold
+    - wide car plates: wider approach threshold
+    - past side allows late snaps
     """
     if not shapes:
         return True
 
     if line_threshold is None:
-        line_threshold = (
-            MOTORCYCLE_LINE_THRESHOLD
-            if (vehicle_class or "").lower() in ("motorcycle", "nonmotor", "bike")
-            else DEFAULT_LINE_THRESHOLD
-        )
+        from domain.plate import is_valid_vn_plate, is_vn_motorcycle_plate, normalize_plate
+
+        vc = (vehicle_class or "").lower()
+        aspect = _plate_aspect_hw(plate_bbox)
+        plen = len(normalize_plate(plate_number) or "")
+        if plate_number and is_vn_motorcycle_plate(plate_number):
+            # 9-char moto (59B123456) — inbound ManualSnap often fires early
+            line_threshold = APPROACH_MOTO_LINE_THRESHOLD
+        elif (
+            aspect is not None
+            and aspect >= 1.15
+            and plate_number
+            and is_valid_vn_plate(plate_number)
+            and plen >= 8
+        ):
+            # Tall 8+ char plate — common real moto OCR while approaching.
+            # 7-char tall fakes (57R6409 clothing) stay strict below.
+            line_threshold = APPROACH_MOTO_LINE_THRESHOLD
+        elif aspect is not None and aspect < 1.0:
+            line_threshold = APPROACH_CAR_LINE_THRESHOLD
+        elif vc in ("motorcycle", "nonmotor", "bike") or (aspect is not None and aspect >= 1.15):
+            # Tall plate without moto number shape — keep strict (shirt OCR ~1418)
+            line_threshold = MOTORCYCLE_LINE_THRESHOLD
+        elif not plate_bbox:
+            line_threshold = NOPLATE_LINE_THRESHOLD
+        else:
+            line_threshold = DEFAULT_LINE_THRESHOLD
 
     regions = [s for s in shapes if s.get("type") == "region" and len(_shape_points(s)) >= 3]
     lines = [
@@ -126,7 +206,12 @@ def detection_hits_overlay(
     if not regions and not lines:
         return True
 
-    boxes = [b for b in (vehicle_bbox, plate_bbox) if b and len(b) >= 4]
+    # Prefer plate geometry when OCR claims a plate — clothing false-reads sit
+    # on the torso while a huge Vehicle box can still touch the lane line.
+    if plate_bbox and len(plate_bbox) >= 4:
+        boxes = [plate_bbox]
+    else:
+        boxes = [b for b in (vehicle_bbox, plate_bbox) if b and len(b) >= 4]
     if not boxes:
         return False
 
@@ -143,7 +228,15 @@ def detection_hits_overlay(
             ax, ay = pts[i]
             bx, by = pts[i + 1]
             for box in boxes:
-                if _bbox_near_line(box, ax, ay, bx, by, line_threshold):
+                if _bbox_hits_line_segment(
+                    box,
+                    ax,
+                    ay,
+                    bx,
+                    by,
+                    near_threshold=line_threshold,
+                    past_threshold=PAST_LINE_THRESHOLD,
+                ):
                     return True
 
     return False
@@ -164,10 +257,9 @@ def overlay_gate_required(shapes: list[dict[str, Any]] | None) -> bool:
 
 
 # Event codes that are position-tracking / forced-snap noise, not passage events
+# TrafficManualSnap is handled specially in the listener (keep when plate present).
 NOISE_EVENT_CODES = {
-    "TrafficVehiclePosition",
     "TrafficVehicleInParkingSpace",
-    "TrafficManualSnap",
 }
 
 # Codes we accept as real passage / measurement (plus any with a plate that is not noise)
@@ -176,10 +268,13 @@ PASSAGE_EVENT_CODES = {
     "TrafficCarMeasurement",
     "TrafficTollGate",
     "TrafficGate",
+    "TrafficVehiclePosition",  # some firmware emit motorcycle ANPR only here
+    "TrafficManualSnap",  # keep only when plate/body present (listener filters)
     "TrafficNonMotorInMotorRoute",
     "TrafficNonMotorHoldUmbrella",
     "TrafficNonMotorOverload",
     "TrafficNonMotorWithoutSafehat",
+    "TrafficNonMotor",
 }
 
 

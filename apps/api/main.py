@@ -361,7 +361,7 @@ async def update_camera(
                     "/cgi-bin/configManager.cgi",
                     {
                         "action": "setConfig",
-                        "VideoAnalyseRule[0][0].Config.Direction[0]": "Both",
+                        "VideoAnalyseRule[0][0].Config.Direction[0]": "Obverse",
                         "VideoAnalyseRule[0][0].Config.Direction[1]": "Reverse",
                         "VideoAnalyseRule[0][0].Config.SnapMotor": "1",
                     },

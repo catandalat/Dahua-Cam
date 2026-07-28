@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, Detection, Session } from "../api";
+import { ZoomableImage } from "../components/ZoomableImage";
 
 type Tab = "detections" | "sessions";
 
@@ -292,10 +293,10 @@ function Thumb({ d }: { d: Detection }) {
     return <div className="w-16 h-12 rounded-lg bg-ink border border-line shrink-0" />;
   }
   return (
-    <img
+    <ZoomableImage
       src={api.mediaUrl(d.id, kind)}
       alt=""
-      className="w-16 h-12 object-cover rounded-lg border border-line shrink-0 bg-ink"
+      className="w-16 h-12 object-cover rounded-lg border border-line shrink-0 bg-ink block"
     />
   );
 }

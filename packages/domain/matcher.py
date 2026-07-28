@@ -9,8 +9,9 @@ from domain.models import VehicleDetection, VehicleSession
 from domain.schemas import DirectionRole, SessionStatus
 from domain.session import resolve_passage_direction
 
-# Min time between entry and exit on a single-camera gate (seconds)
-_MIN_DWELL_SEC = 60.0
+# Min time between entry and exit on a single-camera gate (seconds).
+# Keep below anti-spam cooldown so a real return pass can close the session.
+_MIN_DWELL_SEC = 20.0
 
 
 async def _find_inside(
@@ -73,7 +74,9 @@ async def apply_session_match(
 
     role = DirectionRole(camera_role)
     direction = detection.passage_direction or resolve_passage_direction(
-        camera_role, detection.trigger_occur
+        camera_role,
+        detection.trigger_occur,
+        vehicle_direction=detection.vehicle_direction or detection.junction_direction,
     )
     existing = await _find_inside(session, site_id=detection.site_id, plate=plate)
     event_time = detection.event_utc or datetime.now(timezone.utc)

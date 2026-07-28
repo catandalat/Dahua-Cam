@@ -813,8 +813,8 @@ async def put_overlay(
         try:
             pts = lane["points"]
             res = await client.sync_tollgate_detect_line(pts[0], pts[1], bidirectional=True, snap_motor=True)
-            cam_sync = {"pushed": True, "result": (res or "").strip(), "direction": "Both"}
-            logger.info("Synced DetectLine+Both on cam=%s → %s", cam.name, cam_sync["result"])
+            cam_sync = {"pushed": True, "result": (res or "").strip(), "direction": "Obverse+Reverse"}
+            logger.info("Synced DetectLine+Obverse/Reverse on cam=%s → %s", cam.name, cam_sync["result"])
         except Exception as exc:
             cam_sync = {"pushed": False, "error": str(exc)}
             logger.warning("DetectLine sync failed cam=%s: %s", cam.name, exc)

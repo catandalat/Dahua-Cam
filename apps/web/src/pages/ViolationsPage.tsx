@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { api, Violation } from "../api";
+import { ZoomableImage } from "../components/ZoomableImage";
 
 const TYPES: { value: string; label: string }[] = [
   { value: "", label: "Tất cả" },
@@ -70,7 +71,7 @@ export default function ViolationsPage() {
             className="flex gap-3 items-start md:items-center rounded-xl border border-line bg-panel/70 p-3"
           >
             {v.detection_id && v.image_paths ? (
-              <img
+              <ZoomableImage
                 src={api.mediaUrl(
                   v.detection_id,
                   v.image_paths.plate
@@ -80,7 +81,7 @@ export default function ViolationsPage() {
                       : Object.keys(v.image_paths)[0],
                 )}
                 alt=""
-                className="w-20 h-14 md:w-24 md:h-16 object-cover rounded-lg border border-line bg-ink shrink-0"
+                className="w-20 h-14 md:w-24 md:h-16 object-cover rounded-lg border border-line bg-ink shrink-0 block"
               />
             ) : (
               <div className="w-20 h-14 md:w-24 md:h-16 rounded-lg border border-line bg-ink shrink-0" />

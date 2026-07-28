@@ -1,5 +1,6 @@
 import { FormEvent, useEffect, useState } from "react";
 import { api, PlateWatch, Site, WatchAlert } from "../api";
+import { ZoomableImage } from "../components/ZoomableImage";
 
 const PRIORITY_LABEL: Record<string, string> = {
   low: "Thấp",
@@ -251,7 +252,7 @@ export default function WatchPage() {
               }`}
             >
               {a.detection_id && a.image_paths ? (
-                <img
+                <ZoomableImage
                   src={api.mediaUrl(
                     a.detection_id,
                     a.image_paths.plate
@@ -261,7 +262,7 @@ export default function WatchPage() {
                         : Object.keys(a.image_paths)[0],
                   )}
                   alt=""
-                  className="w-full sm:w-24 h-32 sm:h-16 object-cover rounded-lg border border-line bg-ink"
+                  className="w-full sm:w-24 h-32 sm:h-16 object-cover rounded-lg border border-line bg-ink block"
                 />
               ) : (
                 <div className="w-full sm:w-24 h-20 sm:h-16 rounded-lg border border-line bg-ink" />

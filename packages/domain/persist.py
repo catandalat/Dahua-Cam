@@ -516,6 +516,7 @@ async def persist_detection(
         "detection_id": str(detection.id),
         "session_id": str(session_row.id) if session_row else None,
         "session_status": session_row.status if session_row else None,
+        "passage_direction": detection.passage_direction,
         "speed": detection.speed,
         "speed_status": speed_status_val,
         "violations": [v["violation_type"] for v in viols],
