@@ -131,6 +131,10 @@ class CameraWorker:
         except Exception as exc:
             logger.warning("Could not sync camera clock %s: %s", cam.name, exc)
 
+        # Push system direction_role + overlay lane onto camera DetectLine
+        # (Dahua Obverse-only ignores exit even when app is set bidirectional)
+        await self._sync_camera_gate_rule(client, cam)
+
         # Optional side-stream for vehicles distribution (best-effort)
         dist_task = asyncio.create_task(self._attach_distribution(cam), name=f"dist-{cam.id}")
         pending_event: MultipartEvent | None = None
@@ -174,6 +178,77 @@ class CameraWorker:
                 await dist_task
             except asyncio.CancelledError:
                 pass
+
+    async def _sync_camera_gate_rule(self, client: DahuaClient, cam: Camera) -> None:
+        """Align camera VideoAnalyseRule DetectLine with app overlay + direction_role."""
+        try:
+            async with SessionLocal() as db:
+                overlay = await db.scalar(
+                    select(CameraOverlay).where(CameraOverlay.camera_id == cam.id)
+                )
+            shapes: list = []
+            if overlay and overlay.enabled:
+                payload = overlay.shapes or {}
+                shapes = list(payload.get("shapes") or []) if isinstance(payload, dict) else []
+            lane = next(
+                (
+                    s
+                    for s in shapes
+                    if s.get("type") == "lane_line" and len(s.get("points") or []) >= 2
+                ),
+                None,
+            )
+            if not lane:
+                role = str(cam.direction_role or "entry")
+                if role == "bidirectional":
+                    await client.get_text(
+                        "/cgi-bin/configManager.cgi",
+                        {
+                            "action": "setConfig",
+                            "VideoAnalyseRule[0][0].Config.Direction[0]": "Both",
+                            "VideoAnalyseRule[0][0].Config.Direction[1]": "Reverse",
+                            "VideoAnalyseRule[0][0].Config.SnapMotor": "1",
+                        },
+                    )
+                    logger.info(
+                        "No lane_line for %s — pushed Direction=Both only (draw vạch trên Trực tiếp để khớp DetectLine)",
+                        cam.name,
+                    )
+                else:
+                    logger.info(
+                        "No lane_line overlay for %s — skip DetectLine sync (draw & save vạch trên Trực tiếp)",
+                        cam.name,
+                    )
+                return
+            pts = lane["points"]
+            role = str(cam.direction_role or "entry")
+            bidirectional = role == "bidirectional"
+            res = await client.sync_tollgate_detect_line(
+                pts[0],
+                pts[1],
+                bidirectional=bidirectional,
+                snap_motor=True,
+            )
+            # Entry-only / exit-only cameras still need a single Direction on device
+            if not bidirectional:
+                direction = "Obverse" if role == "entry" else "Reverse"
+                await client.get_text(
+                    "/cgi-bin/configManager.cgi",
+                    {
+                        "action": "setConfig",
+                        "VideoAnalyseRule[0][0].Config.Direction[0]": direction,
+                        "VideoAnalyseRule[0][0].Config.Direction[1]": "",
+                    },
+                )
+            logger.info(
+                "Synced DetectLine on %s role=%s bidirectional=%s → %s",
+                cam.name,
+                role,
+                bidirectional,
+                (res or "").strip(),
+            )
+        except Exception as exc:
+            logger.warning("DetectLine sync failed cam=%s: %s", cam.name, exc)
 
     async def _attach_distribution(self, cam: Camera) -> None:
         """Best-effort Vehicles Distribution attach (10.6.1)."""

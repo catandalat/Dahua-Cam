@@ -26,7 +26,7 @@ export default function CamerasPage() {
     port: 80,
     username: "admin",
     password: "",
-    direction_role: "entry",
+    direction_role: "bidirectional",
     site_id: "",
   });
 
@@ -201,18 +201,6 @@ function CameraCard({
 }) {
   const [rtsp, setRtsp] = useState<string | null>(null);
   const [snapKey, setSnapKey] = useState(0);
-  const [minSpd, setMinSpd] = useState("0");
-  const [maxSpd, setMaxSpd] = useState("80");
-
-  useEffect(() => {
-    api
-      .getSpeedPolicy(c.id)
-      .then((p) => {
-        setMinSpd(String(p.min_speed ?? 0));
-        setMaxSpd(String(p.max_speed ?? 80));
-      })
-      .catch(() => null);
-  }, [c.id]);
 
   return (
     <article className="rounded-xl border border-line bg-panel/70 p-3 md:p-4 space-y-3">
@@ -220,8 +208,52 @@ function CameraCard({
         <div className="min-w-0">
           <div className="font-medium">{c.name}</div>
           <div className="text-sm text-slate-400 font-mono mt-1 break-all">
-            {c.host}:{c.port} · {ROLE_LABEL[c.direction_role] || c.direction_role}
+            {c.host}:{c.port}
           </div>
+          <div className="flex flex-wrap items-center gap-2 mt-2">
+            <label className="text-xs text-slate-500">Hướng ghi nhận</label>
+            <select
+              className="bg-ink border border-line rounded-lg px-2 py-1.5 text-xs"
+              value={c.direction_role}
+              onChange={async (e) => {
+                const direction_role = e.target.value;
+                try {
+                  await api.updateCamera(c.id, { direction_role });
+                  onMsg(
+                    direction_role === "bidirectional"
+                      ? `«${c.name}»: Hai chiều — đã đẩy Direction=Both lên camera`
+                      : `«${c.name}»: ${ROLE_LABEL[direction_role] || direction_role}`,
+                  );
+                  await onRefresh();
+                } catch (err) {
+                  onMsg(String(err));
+                }
+              }}
+            >
+              <option value="entry">Vào</option>
+              <option value="exit">Ra</option>
+              <option value="bidirectional">Hai chiều</option>
+            </select>
+          </div>
+          {c.direction_role === "bidirectional" && (
+            <p className="text-[11px] text-slate-500 mt-1.5">
+              Hai chiều đồng bộ DetectLine camera (Both) để ghi nhận cả xe vào và xe ra.
+            </p>
+          )}
+          <button
+            type="button"
+            className="mt-2 text-[11px] border border-line rounded-lg px-2 py-1 hover:bg-white/5"
+            onClick={async () => {
+              try {
+                await api.updateCamera(c.id, { direction_role: c.direction_role });
+                onMsg(`Đã đồng bộ hướng «${ROLE_LABEL[c.direction_role] || c.direction_role}» lên camera`);
+              } catch (err) {
+                onMsg(String(err));
+              }
+            }}
+          >
+            Đồng bộ hướng lên camera
+          </button>
           {(c.port === 554 || c.port === 8554) && (
             <div className="text-xs text-amber-300 mt-2 flex flex-wrap items-center gap-2">
               Cổng {c.port} là RTSP — snapshot/sự kiện CGI sẽ lỗi.
@@ -295,18 +327,17 @@ function CameraCard({
             onClick={async () => {
               const plate = prompt("Biển số giả lập?", "51F98765");
               if (!plate) return;
-              const speedStr = prompt("Tốc độ (km/h)?", "95");
               try {
                 const res = await api.ingestDetection({
                   camera_id: c.id,
                   plate_number: plate,
-                  speed: speedStr ? Number(speedStr) : null,
                   vehicle_brand: "Toyota",
                   vehicle_color: "White",
                   vehicle_category: "Car",
+                  vehicle_class: "car",
                 });
                 onMsg(
-                  `Đã ghi nhận ${plate} · ${res.speed ?? "—"} km/h · ${Array.isArray(res.violations) ? (res.violations as string[]).join(",") || "ok" : "ok"}`,
+                  `Đã ghi nhận ${plate} · ${Array.isArray(res.violations) ? (res.violations as string[]).join(",") || "ok" : "ok"}`,
                 );
                 await onRefresh();
               } catch (e) {
@@ -417,40 +448,6 @@ function CameraCard({
               }
             }}
           />
-          <div className="flex items-center gap-1 text-xs flex-wrap w-full sm:w-auto">
-            <input
-              className="w-14 bg-ink border border-line rounded-lg px-1 py-1.5"
-              value={minSpd}
-              onChange={(e) => setMinSpd(e.target.value)}
-              aria-label="Tốc độ tối thiểu"
-            />
-            <span>–</span>
-            <input
-              className="w-14 bg-ink border border-line rounded-lg px-1 py-1.5"
-              value={maxSpd}
-              onChange={(e) => setMaxSpd(e.target.value)}
-              aria-label="Tốc độ tối đa"
-            />
-            <OpBtn
-              label="Đặt tốc độ"
-              onClick={async () => {
-                await api.setSpeedLimit(c.id, {
-                  min_speed: Number(minSpd) || 0,
-                  max_speed: Number(maxSpd) || 80,
-                  alert_overspeed: true,
-                  push_to_camera: true,
-                });
-                onMsg("Đã lưu ngưỡng tốc độ & cảnh báo vượt tốc");
-                await onRefresh();
-              }}
-            />
-            <Link
-              to="/speed"
-              className="text-xs border border-accent/40 text-accent rounded-lg px-2.5 py-1.5 hover:bg-accent/10"
-            >
-              Trang tốc độ
-            </Link>
-          </div>
         </div>
       </div>
       {rtsp && (

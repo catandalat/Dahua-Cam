@@ -12,13 +12,11 @@ import FlowPage from "./pages/FlowPage";
 import RegistryPage from "./pages/RegistryPage";
 import WatchPage from "./pages/WatchPage";
 import MonitorPage from "./pages/MonitorPage";
-import SpeedPage from "./pages/SpeedPage";
 import MapPage from "./pages/MapPage";
 
 const links = [
   { to: "/", label: "Trực tiếp" },
   { to: "/map", label: "Bản đồ" },
-  { to: "/speed", label: "Tốc độ" },
   { to: "/inside", label: "Trong khu vực" },
   { to: "/history", label: "Lịch sử" },
   { to: "/stats", label: "Thống kê" },
@@ -131,7 +129,6 @@ export default function App() {
           <Route path="/" element={<LivePage />} />
           <Route path="/map" element={<MapPage />} />
           <Route path="/monitor" element={<MonitorPage />} />
-          <Route path="/speed" element={<SpeedPage />} />
           <Route path="/inside" element={<InsidePage />} />
           <Route path="/history" element={<HistoryPage />} />
           <Route path="/stats" element={<StatsPage />} />

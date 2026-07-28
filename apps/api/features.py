@@ -801,7 +801,30 @@ async def put_overlay(
         row = CameraOverlay(camera_id=camera_id, shapes=payload, enabled=body.enabled)
         db.add(row)
     await db.commit()
-    return {"camera_id": str(camera_id), "shapes": cleaned, "enabled": body.enabled}
+
+    # Push lane_line to camera DetectLine + bidirectional (else exit vehicles never snap)
+    cam_sync: dict[str, Any] = {"pushed": False}
+    lane = next((s for s in cleaned if s.get("type") == "lane_line" and len(s.get("points") or []) >= 2), None)
+    if lane and body.enabled:
+        cam = await _cam(camera_id, db)
+        client = DahuaClient(
+            cam.host, cam.username, cam.password, port=cam.port, use_https=cam.use_https, timeout=12.0
+        )
+        try:
+            pts = lane["points"]
+            res = await client.sync_tollgate_detect_line(pts[0], pts[1], bidirectional=True, snap_motor=True)
+            cam_sync = {"pushed": True, "result": (res or "").strip(), "direction": "Both"}
+            logger.info("Synced DetectLine+Both on cam=%s → %s", cam.name, cam_sync["result"])
+        except Exception as exc:
+            cam_sync = {"pushed": False, "error": str(exc)}
+            logger.warning("DetectLine sync failed cam=%s: %s", cam.name, exc)
+
+    return {
+        "camera_id": str(camera_id),
+        "shapes": cleaned,
+        "enabled": body.enabled,
+        "camera_sync": cam_sync,
+    }
 
 
 @router.get("/cameras/{camera_id}/live-detections")

@@ -23,6 +23,7 @@ from domain.live import live_bus
 from domain.models import (
     Camera,
     CameraCaps,
+    CameraOverlay,
     Gate,
     Lane,
     PlateListEntry,
@@ -329,6 +330,55 @@ async def update_camera(
         setattr(cam, k, v)
     await db.commit()
     await db.refresh(cam)
+
+    # When direction_role changes, push Both/Obverse/Reverse to camera DetectLine
+    if "direction_role" in data and data["direction_role"] is not None:
+        try:
+            overlay = await db.scalar(
+                select(CameraOverlay).where(CameraOverlay.camera_id == cam.id)
+            )
+            shapes: list = []
+            if overlay and overlay.enabled:
+                payload = overlay.shapes or {}
+                shapes = list(payload.get("shapes") or []) if isinstance(payload, dict) else []
+            lane = next(
+                (s for s in shapes if s.get("type") == "lane_line" and len(s.get("points") or []) >= 2),
+                None,
+            )
+            client = DahuaClient(
+                cam.host, cam.username, cam.password, port=cam.port, use_https=cam.use_https, timeout=12.0
+            )
+            role = str(cam.direction_role)
+            if lane:
+                await client.sync_tollgate_detect_line(
+                    lane["points"][0],
+                    lane["points"][1],
+                    bidirectional=(role == "bidirectional"),
+                    snap_motor=True,
+                )
+            if role == "bidirectional":
+                await client.get_text(
+                    "/cgi-bin/configManager.cgi",
+                    {
+                        "action": "setConfig",
+                        "VideoAnalyseRule[0][0].Config.Direction[0]": "Both",
+                        "VideoAnalyseRule[0][0].Config.Direction[1]": "Reverse",
+                        "VideoAnalyseRule[0][0].Config.SnapMotor": "1",
+                    },
+                )
+            else:
+                direction = "Obverse" if role == "entry" else "Reverse"
+                await client.get_text(
+                    "/cgi-bin/configManager.cgi",
+                    {
+                        "action": "setConfig",
+                        "VideoAnalyseRule[0][0].Config.Direction[0]": direction,
+                        "VideoAnalyseRule[0][0].Config.Direction[1]": "",
+                    },
+                )
+        except Exception as exc:
+            logger.warning("direction_role camera sync failed: %s", exc)
+
     return _camera_out(cam)
 
 

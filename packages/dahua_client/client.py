@@ -325,6 +325,35 @@ class DahuaClient:
             {"action": "setCurrentTime", "time": stamp},
         )
 
+    async def sync_tollgate_detect_line(
+        self,
+        point_a: tuple[int, int] | list[int],
+        point_b: tuple[int, int] | list[int],
+        *,
+        bidirectional: bool = True,
+        snap_motor: bool = True,
+    ) -> str:
+        """Push overlay lane into VideoAnalyseRule DetectLine (Dahua 0–8192).
+
+        Direction=Both is required for entry+exit; Obverse-only misses vehicles leaving.
+        """
+        x1, y1 = int(point_a[0]), int(point_a[1])
+        x2, y2 = int(point_b[0]), int(point_b[1])
+        params: dict[str, Any] = {
+            "action": "setConfig",
+            "VideoAnalyseRule[0][0].Config.DetectLine[0][0]": str(x1),
+            "VideoAnalyseRule[0][0].Config.DetectLine[0][1]": str(y1),
+            "VideoAnalyseRule[0][0].Config.DetectLine[1][0]": str(x2),
+            "VideoAnalyseRule[0][0].Config.DetectLine[1][1]": str(y2),
+            "VideoAnalyseRule[0][0].Config.SnapMotor": "1" if snap_motor else "0",
+            "VideoAnalyseRule[0][0].Config.LastSnapPosition": "50",
+            "VideoAnalyseRule[0][0].Enable": "true",
+        }
+        if bidirectional:
+            params["VideoAnalyseRule[0][0].Config.Direction[0]"] = "Both"
+            params["VideoAnalyseRule[0][0].Config.Direction[1]"] = "Reverse"
+        return await self.get_text("/cgi-bin/configManager.cgi", params)
+
     async def snapshot(self, channel: int = 1) -> bytes:
         async with self._client(timeout=15.0) as client:
             r = await client.get("/cgi-bin/snapshot.cgi", params={"channel": channel})

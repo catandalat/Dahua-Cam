@@ -8,8 +8,6 @@ const TYPES: { value: string; label: string }[] = [
   { value: "calling", label: "Gọi điện" },
   { value: "smoking", label: "Hút thuốc" },
   { value: "unlicensed", label: "Không biển số" },
-  { value: "overspeed", label: "Vượt tốc độ" },
-  { value: "underspeed", label: "Dưới tốc độ" },
   { value: "retrograde", label: "Đi ngược chiều" },
   { value: "parking", label: "Đỗ sai quy định" },
   { value: "overline", label: "Lấn vạch" },
@@ -44,7 +42,7 @@ export default function ViolationsPage() {
         <div>
           <h2 className="text-xl md:text-2xl font-semibold">Vi phạm</h2>
           <p className="text-slate-400 text-sm mt-1">
-            Dây an toàn, gọi điện, tốc độ và các sự kiện giao thông khác
+            Dây an toàn, gọi điện và các sự kiện giao thông khác
           </p>
         </div>
         <select
@@ -75,13 +73,11 @@ export default function ViolationsPage() {
               <img
                 src={api.mediaUrl(
                   v.detection_id,
-                  v.image_paths.overspeed
-                    ? "overspeed"
-                    : v.image_paths.plate
-                      ? "plate"
-                      : v.image_paths.vehicle
-                        ? "vehicle"
-                        : Object.keys(v.image_paths)[0],
+                  v.image_paths.plate
+                    ? "plate"
+                    : v.image_paths.vehicle
+                      ? "vehicle"
+                      : Object.keys(v.image_paths)[0],
                 )}
                 alt=""
                 className="w-20 h-14 md:w-24 md:h-16 object-cover rounded-lg border border-line bg-ink shrink-0"
@@ -96,7 +92,6 @@ export default function ViolationsPage() {
                   {TYPE_LABEL[v.violation_type] || v.violation_type}
                 </span>
               </div>
-              <SpeedDetail detail={v.detail} type={v.violation_type} />
               <div className="text-xs text-slate-500 mt-1 font-mono">
                 {v.event_utc ? new Date(v.event_utc).toLocaleString("vi-VN") : "—"}
               </div>
@@ -109,34 +104,6 @@ export default function ViolationsPage() {
           </div>
         )}
       </div>
-    </div>
-  );
-}
-
-function SpeedDetail({
-  detail,
-  type,
-}: {
-  detail?: Record<string, unknown>;
-  type: string;
-}) {
-  if (!detail || (type !== "overspeed" && type !== "underspeed")) return null;
-  const speed = detail.speed;
-  const peak = detail.peak_speed;
-  const limitMax = detail.limit_max ?? (typeof detail.speed_limit === "object" && detail.speed_limit
-    ? (detail.speed_limit as { max?: number }).max
-    : detail.speed_limit);
-  const overPct = detail.over_speeding_pct;
-  const source = detail.source;
-  return (
-    <div className="text-sm text-slate-300 mt-1">
-      {speed != null && <span className="font-mono text-danger">{String(speed)} km/h</span>}
-      {peak != null && Number(peak) !== Number(speed) && (
-        <span className="font-mono text-danger"> · đỉnh {String(peak)} km/h</span>
-      )}
-      {limitMax != null && <span className="text-slate-500"> · ngưỡng {String(limitMax)}</span>}
-      {overPct != null && <span className="text-slate-500"> · +{String(overPct)}%</span>}
-      {source != null && <span className="text-slate-600 text-xs"> · {String(source)}</span>}
     </div>
   );
 }

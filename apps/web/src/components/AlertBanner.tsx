@@ -1,10 +1,8 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { api, SpeedAlert, WatchAlert, WS_URL } from "../api";
+import { api, WatchAlert, WS_URL } from "../api";
 
-type Toast =
-  | { kind: "watch"; data: WatchAlert }
-  | { kind: "speed"; data: SpeedAlert };
+type Toast = { kind: "watch"; data: WatchAlert };
 
 export default function AlertBanner({ onNavigate }: { onNavigate?: () => void }) {
   const [unread, setUnread] = useState(0);
@@ -32,17 +30,6 @@ export default function AlertBanner({ onNavigate }: { onNavigate?: () => void })
             });
           }
           setTimeout(() => setToast((t) => (t?.kind === "watch" && t.data.id === alert.id ? null : t)), 12000);
-        }
-        if (msg.type === "speed_alert" && msg.alert) {
-          const alert = msg.alert as SpeedAlert;
-          setToast({ kind: "speed", data: alert });
-          if (typeof Notification !== "undefined" && Notification.permission === "granted") {
-            new Notification(
-              alert.kind === "overspeed" ? `Vượt tốc ${alert.plate_number || ""}` : `Dưới tốc ${alert.plate_number || ""}`,
-              { body: alert.message, tag: alert.id },
-            );
-          }
-          setTimeout(() => setToast((t) => (t?.kind === "speed" && t.data.id === alert.id ? null : t)), 12000);
         }
       } catch {
         /* ignore */
@@ -111,62 +98,6 @@ export default function AlertBanner({ onNavigate }: { onNavigate?: () => void })
               }}
             >
               Đã đọc
-            </button>
-          </div>
-        </div>
-      )}
-
-      {toast?.kind === "speed" && (
-        <div className="fixed top-3 left-3 right-3 md:left-auto md:right-4 md:w-96 z-[60] border border-danger/50 bg-panel shadow-xl rounded-xl p-4">
-          <div className="flex items-start justify-between gap-2">
-            <div className="min-w-0">
-              <div className="text-xs uppercase tracking-wide text-danger">
-                {toast.data.kind === "overspeed" ? "Cảnh báo vượt tốc" : "Cảnh báo dưới tốc"}
-              </div>
-              <div className="font-mono text-xl mt-1">{toast.data.plate_number || "—"}</div>
-              <p className="text-sm text-slate-300 mt-2 break-words">{toast.data.message}</p>
-              {toast.data.speed != null && (
-                <div className="font-mono text-accent mt-2">
-                  {toast.data.speed} km/h
-                  {toast.data.peak_speed != null && toast.data.peak_speed !== toast.data.speed
-                    ? ` · đỉnh ${toast.data.peak_speed}`
-                    : ""}
-                  {toast.data.limit_max != null ? ` / ngưỡng ${toast.data.limit_max}` : ""}
-                  {toast.data.over_pct != null ? ` (+${toast.data.over_pct}%)` : ""}
-                </div>
-              )}
-            </div>
-            <button type="button" className="text-slate-500 text-sm shrink-0 p-1" onClick={() => setToast(null)}>
-              ✕
-            </button>
-          </div>
-          <div className="mt-3 flex flex-wrap gap-2">
-            <Link
-              to="/speed"
-              className="text-xs border border-danger/40 text-danger rounded-lg px-3 py-1.5"
-              onClick={() => {
-                setToast(null);
-                onNavigate?.();
-              }}
-            >
-              Xem tốc độ
-            </Link>
-            <Link
-              to="/violations?type=overspeed"
-              className="text-xs border border-line rounded-lg px-3 py-1.5"
-              onClick={() => {
-                setToast(null);
-                onNavigate?.();
-              }}
-            >
-              Vi phạm
-            </Link>
-            <button
-              type="button"
-              className="text-xs border border-line rounded-lg px-3 py-1.5"
-              onClick={() => setToast(null)}
-            >
-              Đóng
             </button>
           </div>
         </div>

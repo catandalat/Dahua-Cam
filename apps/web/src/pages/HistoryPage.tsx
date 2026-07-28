@@ -1,10 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, Detection, Session } from "../api";
 
-function fmtSpeed(v?: number | null) {
-  return v != null && !Number.isNaN(Number(v)) && Number(v) > 0 ? `${v} km/h` : "—";
-}
-
 type Tab = "detections" | "sessions";
 
 const CLASS_LABEL: Record<string, string> = {
@@ -29,10 +25,7 @@ export default function HistoryPage() {
       dq.set("plate", plate.trim());
       sq.set("plate", plate.trim());
     }
-    Promise.all([
-      api.detections(`?${dq}`),
-      api.sessions(`?${sq}`),
-    ])
+    Promise.all([api.detections(`?${dq}`), api.sessions(`?${sq}`)])
       .then(([d, s]) => {
         setDets(d);
         setSessions(s);
@@ -108,11 +101,7 @@ export default function HistoryPage() {
 
       {error && <div className="text-danger text-sm">{error}</div>}
 
-      {tab === "detections" ? (
-        <DetectionsList rows={dets} />
-      ) : (
-        <SessionsList rows={sessions} />
-      )}
+      {tab === "detections" ? <DetectionsList rows={dets} /> : <SessionsList rows={sessions} />}
     </div>
   );
 }
@@ -125,9 +114,7 @@ function DetectionsList({ rows }: { rows: Detection[] }) {
           <article key={d.id} className="rounded-xl border border-line bg-panel/70 p-3 text-sm flex gap-3">
             <Thumb d={d} />
             <div className="min-w-0 flex-1">
-              <div className="font-mono text-lg">
-                {d.plate_number || "Không biển"}
-              </div>
+              <div className="font-mono text-lg">{d.plate_number || "Không biển"}</div>
               <div className="flex flex-wrap gap-1.5 mt-1">
                 {d.passage_direction && (
                   <span
@@ -148,7 +135,6 @@ function DetectionsList({ rows }: { rows: Detection[] }) {
               </div>
               <div className="text-slate-400 mt-1 text-xs font-mono">
                 {d.event_utc ? new Date(d.event_utc).toLocaleString("vi-VN") : "—"}
-                {d.speed != null && Number(d.speed) > 0 ? ` · ${d.speed} km/h` : ""}
               </div>
               <div className="text-slate-500 text-xs mt-0.5">
                 {[d.vehicle_brand, d.vehicle_color, d.event_code].filter(Boolean).join(" · ") || "—"}
@@ -171,7 +157,6 @@ function DetectionsList({ rows }: { rows: Detection[] }) {
               <th className="px-3 py-2">Biển số</th>
               <th className="px-3 py-2">Hướng</th>
               <th className="px-3 py-2">Thời gian</th>
-              <th className="px-3 py-2">Tốc độ</th>
               <th className="px-3 py-2">Xe</th>
               <th className="px-3 py-2">Sự kiện</th>
             </tr>
@@ -193,7 +178,6 @@ function DetectionsList({ rows }: { rows: Detection[] }) {
                 <td className="px-3 py-2 font-mono text-xs">
                   {d.event_utc ? new Date(d.event_utc).toLocaleString("vi-VN") : "—"}
                 </td>
-                <td className="px-3 py-2 font-mono text-accent">{fmtSpeed(d.speed)}</td>
                 <td className="px-3 py-2 text-slate-300">
                   {[CLASS_LABEL[d.vehicle_class || ""] || d.vehicle_class, d.vehicle_brand, d.vehicle_color]
                     .filter(Boolean)
@@ -204,7 +188,7 @@ function DetectionsList({ rows }: { rows: Detection[] }) {
             ))}
             {!rows.length && (
               <tr>
-                <td colSpan={7} className="px-3 py-8 text-center text-slate-500">
+                <td colSpan={6} className="px-3 py-8 text-center text-slate-500">
                   Chưa có nhận diện được ghi
                 </td>
               </tr>
@@ -235,11 +219,9 @@ function SessionsList({ rows }: { rows: Session[] }) {
             </div>
             <div className="text-slate-400 mt-1">
               Vào: {r.entered_at ? new Date(r.entered_at).toLocaleString("vi-VN") : "—"}
-              <span className="text-accent font-mono ml-2">{fmtSpeed(r.entry_speed)}</span>
             </div>
             <div className="text-slate-400">
               Ra: {r.exited_at ? new Date(r.exited_at).toLocaleString("vi-VN") : "—"}
-              <span className="text-accent font-mono ml-2">{fmtSpeed(r.exit_speed)}</span>
             </div>
             <div className="text-slate-300 mt-1">
               Thời gian:{" "}
@@ -261,9 +243,7 @@ function SessionsList({ rows }: { rows: Session[] }) {
               <th className="px-3 py-2">Biển số</th>
               <th className="px-3 py-2">Trạng thái</th>
               <th className="px-3 py-2">Vào</th>
-              <th className="px-3 py-2">Tốc độ vào</th>
               <th className="px-3 py-2">Ra</th>
-              <th className="px-3 py-2">Tốc độ ra</th>
               <th className="px-3 py-2">Thời gian</th>
             </tr>
           </thead>
@@ -275,11 +255,9 @@ function SessionsList({ rows }: { rows: Session[] }) {
                 <td className="px-3 py-2">
                   {r.entered_at ? new Date(r.entered_at).toLocaleString("vi-VN") : "—"}
                 </td>
-                <td className="px-3 py-2 font-mono text-accent">{fmtSpeed(r.entry_speed)}</td>
                 <td className="px-3 py-2">
                   {r.exited_at ? new Date(r.exited_at).toLocaleString("vi-VN") : "—"}
                 </td>
-                <td className="px-3 py-2 font-mono text-accent">{fmtSpeed(r.exit_speed)}</td>
                 <td className="px-3 py-2 font-mono">
                   {r.duration_sec != null ? `${Math.round(r.duration_sec / 60)} phút` : "—"}
                 </td>
@@ -287,7 +265,7 @@ function SessionsList({ rows }: { rows: Session[] }) {
             ))}
             {!rows.length && (
               <tr>
-                <td colSpan={7} className="px-3 py-8 text-center text-slate-500">
+                <td colSpan={5} className="px-3 py-8 text-center text-slate-500">
                   Chưa có phiên. Xe cần qua cổng lần 2 (≥ 60 giây) để đóng phiên vào/ra.
                 </td>
               </tr>

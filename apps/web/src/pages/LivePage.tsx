@@ -778,25 +778,12 @@ export default function LivePage() {
                       <Badge color="danger" text="Không biển" />
                     )}
                     {d.watched && <Badge color="danger" text="Truy vết" />}
-                    {(d.speed_status === "overspeed" ||
-                      (d.speed != null &&
-                        d.limit_max != null &&
-                        d.speed > d.limit_max)) && (
-                      <Badge
-                        color="danger"
-                        text={`Vượt tốc ${d.speed} km/h${d.limit_max != null ? `/${d.limit_max}` : ""}`}
-                      />
-                    )}
-                    {d.speed_status === "underspeed" && (
-                      <Badge color="warn" text={`Dưới tốc ${d.speed} km/h`} />
-                    )}
                   </div>
                   <div className="text-sm text-slate-400 mt-1 break-words">
                     {[
                       d.vehicle_brand,
                       d.vehicle_model,
                       d.vehicle_category,
-                      d.speed != null && Number(d.speed) > 0 ? `${d.speed} km/h` : null,
                     ]
                       .filter(Boolean)
                       .join(" · ") || d.event_code}
