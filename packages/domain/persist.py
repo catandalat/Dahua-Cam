@@ -274,7 +274,12 @@ async def persist_detection(
     # normalize any absolute paths already present
     image_paths = {k: to_relative_snapshot_path(v) for k, v in image_paths.items()}
 
-    passage = resolve_passage_direction(cam.direction_role, det.get("trigger_occur"))
+    passage = resolve_passage_direction(
+        cam.direction_role,
+        det.get("trigger_occur"),
+        vehicle_direction=str(det.get("vehicle_direction") or det.get("junction_direction") or "")
+        or None,
+    )
     meta = build_meta(det)
 
     raw = RawEvent(

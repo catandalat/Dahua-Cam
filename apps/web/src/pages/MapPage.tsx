@@ -420,10 +420,10 @@ export default function MapPage() {
                   )}
                   <div className="mt-2 flex flex-wrap gap-1.5">
                     <Link
-                      to={`/monitor?camera=${selected.id}`}
+                      to={`/?camera=${selected.id}`}
                       className="text-[11px] rounded bg-sky-600 text-white px-2 py-1"
                     >
-                      Quan sát
+                      Trực tiếp
                     </Link>
                     <Link
                       to="/cameras"

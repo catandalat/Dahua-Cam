@@ -52,11 +52,10 @@ class EventCode(StrEnum):
     NONMOTOR_WITHOUT_SAFEHAT = "TrafficNonMotorWithoutSafehat"
 
 
-# P0 codes always preferred when caps allow
+# P0 codes always preferred when caps allow (ManualSnap is noisy — never default)
 P0_EVENT_CODES = [
     EventCode.TRAFFIC_JUNCTION,
     EventCode.TRAFFIC_CAR_MEASUREMENT,
-    EventCode.TRAFFIC_MANUAL_SNAP,
 ]
 
 P1_EVENT_CODES = [

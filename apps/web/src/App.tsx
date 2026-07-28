@@ -18,7 +18,6 @@ import MapPage from "./pages/MapPage";
 const links = [
   { to: "/", label: "Trực tiếp" },
   { to: "/map", label: "Bản đồ" },
-  { to: "/monitor", label: "Quan sát" },
   { to: "/speed", label: "Tốc độ" },
   { to: "/inside", label: "Trong khu vực" },
   { to: "/history", label: "Lịch sử" },

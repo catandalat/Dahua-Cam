@@ -21,10 +21,17 @@ from domain.db import SessionLocal, init_db
 from domain.live import live_bus
 from domain.models import (
     Camera,
+    CameraOverlay,
     JamEvent,
     Lane,
     TrafficFlowSample,
     ViolationEvent,
+)
+from domain.overlay_gate import (
+    detection_hits_overlay,
+    is_noise_event_code,
+    is_passage_event_code,
+    overlay_gate_required,
 )
 from domain.persist import persist_detection, to_relative_snapshot_path
 from domain.session import should_dedupe
@@ -116,16 +123,39 @@ class CameraWorker:
 
         # Optional side-stream for vehicles distribution (best-effort)
         dist_task = asyncio.create_task(self._attach_distribution(cam), name=f"dist-{cam.id}")
+        pending_event: MultipartEvent | None = None
         try:
             async for event in client.attach_events(codes, heartbeat=5):
                 if self._stop.is_set():
                     break
                 if event.is_heartbeat:
+                    if pending_event is not None:
+                        try:
+                            await self._handle_event(cam, pending_event)
+                        except Exception:
+                            logger.exception("Failed handling event on %s", cam.name)
+                        pending_event = None
                     await self._set_status("connected")
                     continue
                 await self._set_status("connected")
+                # Dahua often sends JPEG in a following multipart part with no event JSON
+                has_event_body = bool(event.data.get("Events") or event.event_code)
+                image_only = bool(event.images) and not has_event_body and not (event.text or "").strip()
+                if image_only:
+                    if pending_event is not None:
+                        pending_event.images = list(pending_event.images or []) + [
+                            img for img in event.images if img.data
+                        ]
+                    continue
+                if pending_event is not None:
+                    try:
+                        await self._handle_event(cam, pending_event)
+                    except Exception:
+                        logger.exception("Failed handling event on %s", cam.name)
+                pending_event = event
+            if pending_event is not None and not self._stop.is_set():
                 try:
-                    await self._handle_event(cam, event)
+                    await self._handle_event(cam, pending_event)
                 except Exception:
                     logger.exception("Failed handling event on %s", cam.name)
         finally:
@@ -293,7 +323,12 @@ class CameraWorker:
             )
             return
 
-        # Skip empty ManualSnap / noise with neither plate nor real vehicle object
+        code_name = str(det.get("event_code") or "").split(";")[0].strip()
+        if is_noise_event_code(code_name):
+            logger.info("Skip noise event cam=%s code=%s", cam.name, code_name)
+            return
+
+        # Skip empty / ghost frames with neither plate nor real vehicle/NonMotor object
         ev0 = event.first_event if isinstance(event.first_event, dict) else {}
         vehicle_obj = ev0.get("Vehicle") if isinstance(ev0.get("Vehicle"), dict) else {}
         non_motor_obj = ev0.get("NonMotor") if isinstance(ev0.get("NonMotor"), dict) else {}
@@ -303,20 +338,49 @@ class CameraWorker:
             or non_motor_obj.get("ObjectID")
             or non_motor_obj.get("BoundingBox")
         )
-        code_name = str(det.get("event_code") or "")
-        # TrafficManualSnap from Monitor auto-refresh is very noisy — only keep when plate is read
-        if code_name == "TrafficManualSnap" and not det.get("plate_number"):
-            logger.debug("Skip ManualSnap without plate cam=%s", cam.name)
+        has_plate = bool(det.get("plate_number"))
+        # Unlicensed ghosts (forced snap / empty scene) — require plate unless real passage code
+        if not has_plate and det.get("unlicensed"):
+            logger.debug("Skip unlicensed without plate cam=%s code=%s", cam.name, code_name)
             return
-        if not det.get("plate_number") and not has_vehicle_obj:
+        if not has_plate and not has_vehicle_obj:
             logger.debug(
                 "Skip empty event cam=%s code=%s",
                 cam.name,
                 det.get("event_code"),
             )
             return
+        # Prefer junction/measurement; other codes only if plate was actually read
+        if not is_passage_event_code(code_name) and not has_plate:
+            logger.debug("Skip non-passage without plate cam=%s code=%s", cam.name, code_name)
+            return
 
-        # Skip empty noise without plate for non-violation-only events? Keep all with code.
+        # Gate by drawn lane / stop / region overlays (Dahua 0–8192)
+        async with SessionLocal() as db:
+            overlay = await db.scalar(
+                select(CameraOverlay).where(CameraOverlay.camera_id == cam.id)
+            )
+        shapes: list = []
+        if overlay and overlay.enabled:
+            payload = overlay.shapes or {}
+            shapes = list(payload.get("shapes") or []) if isinstance(payload, dict) else []
+        if overlay_gate_required(shapes):
+            hit = detection_hits_overlay(
+                shapes,
+                vehicle_bbox=det.get("vehicle_bbox"),
+                plate_bbox=det.get("plate_bbox"),
+            )
+            if not hit:
+                logger.info(
+                    "Skip off-lane cam=%s plate=%s code=%s vb=%s pb=%s",
+                    cam.name,
+                    det.get("plate_number"),
+                    code_name,
+                    det.get("vehicle_bbox"),
+                    det.get("plate_bbox"),
+                )
+                return
+
         if should_dedupe(
             plate=det.get("plate_number"),
             group_id=det.get("group_id"),
@@ -334,8 +398,11 @@ class CameraWorker:
             if img.data and len(img.data) > 1000:
                 source_jpeg = img.data
                 break
-        if not source_jpeg:
-            source_jpeg = await self._fetch_snapshot_bytes(cam)
+        if not image_paths:
+            if not source_jpeg:
+                source_jpeg = await self._fetch_snapshot_bytes(cam)
+            if source_jpeg:
+                image_paths = await self._write_fallback_image(cam.id, source_jpeg)
 
         gate_id = None
         lane_id = cam.lane_id
@@ -377,7 +444,8 @@ class CameraWorker:
         )
 
     async def _save_images(self, event: MultipartEvent, camera_id: uuid.UUID) -> dict[str, str]:
-        if not event.images:
+        usable = [img for img in (event.images or []) if img.data and len(img.data) > 500]
+        if not usable:
             return {}
         settings = get_settings()
         day = datetime.now(timezone.utc).strftime("%Y%m%d")
@@ -385,10 +453,8 @@ class CameraWorker:
         base = Path(settings.snapshot_dir) / day / str(camera_id) / event_id
         base.mkdir(parents=True, exist_ok=True)
         paths: dict[str, str] = {}
-        for i, img in enumerate(event.images):
-            if not img.data:
-                continue
-            kind = img.kind if img.kind != "unknown" else f"img{i}"
+        for i, img in enumerate(usable):
+            kind = img.kind if img.kind != "unknown" else ("scene" if i == 0 else f"img{i}")
             name = f"{kind}.jpg"
             key = kind
             if key in paths:
@@ -399,7 +465,21 @@ class CameraWorker:
             paths[key] = to_relative_snapshot_path(fp)
         return paths
 
+    async def _write_fallback_image(self, camera_id: uuid.UUID, jpeg: bytes) -> dict[str, str]:
+        """Persist live snapshot so UI thumbs are not empty when multipart had no JPEG."""
+        if not jpeg or len(jpeg) < 500:
+            return {}
+        settings = get_settings()
+        day = datetime.now(timezone.utc).strftime("%Y%m%d")
+        event_id = uuid.uuid4().hex
+        base = Path(settings.snapshot_dir) / day / str(camera_id) / event_id
+        base.mkdir(parents=True, exist_ok=True)
+        fp = base / "scene.jpg"
+        fp.write_bytes(jpeg)
+        return {"scene": to_relative_snapshot_path(fp)}
+
     async def _fetch_snapshot_bytes(self, cam: Camera) -> bytes | None:
+        # Never call manual_snap() here — it injects TrafficManualSnap noise into the event stream
         client = DahuaClient(
             cam.host,
             cam.username,
@@ -412,11 +492,7 @@ class CameraWorker:
             return await client.snapshot()
         except Exception as exc:
             logger.warning("Snapshot failed cam=%s: %s", cam.name, exc)
-            try:
-                return await client.manual_snap()
-            except Exception as exc2:
-                logger.warning("Manual snap failed cam=%s: %s", cam.name, exc2)
-                return None
+            return None
 
 
 def dig_flow(event: MultipartEvent) -> bool:

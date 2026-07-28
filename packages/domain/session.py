@@ -11,6 +11,8 @@ from domain.schemas import DirectionRole, SessionStatus
 def resolve_passage_direction(
     camera_role: DirectionRole | str,
     trigger_occur: int | None,
+    *,
+    vehicle_direction: str | None = None,
 ) -> str | None:
     """Return 'entry', 'exit', or None when direction cannot be resolved."""
     role = DirectionRole(camera_role)
@@ -22,6 +24,12 @@ def resolve_passage_direction(
         if trigger_occur == 0:
             return "entry"
         if trigger_occur == 1:
+            return "exit"
+        # Fallback from Dahua direction strings when TriggerOccur missing
+        vd = (vehicle_direction or "").strip().lower()
+        if vd in ("0", "approach", "head", "front", "in", "entry", "come"):
+            return "entry"
+        if vd in ("1", "away", "tail", "back", "out", "exit", "leave"):
             return "exit"
     return None
 

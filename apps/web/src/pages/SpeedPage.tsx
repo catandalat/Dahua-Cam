@@ -112,10 +112,10 @@ export default function SpeedPage() {
                   </div>
                 </div>
                 <Link
-                  to={`/monitor?camera=${p.camera_id}`}
+                  to={`/?camera=${p.camera_id}`}
                   className="text-xs border border-line rounded-lg px-2.5 py-1.5"
                 >
-                  Quan sát
+                  Trực tiếp
                 </Link>
               </div>
               <div className="flex flex-wrap gap-3 items-end">

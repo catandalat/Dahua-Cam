@@ -62,9 +62,20 @@ def extract_detection(event: MultipartEvent) -> dict[str, Any]:
         "Object.Text",
         "TrafficCar.PlateNo",
         "Plate.PlateNumber",
+        "NonMotor.PlateNumber",
+        "NonMotor.Object.PlateNumber",
+        "NonMotor.Plate.PlateNumber",
+        "NonMotor.Text",
     )
-    plate_color = dig(ev, "TrafficCar.PlateColor", "Object.PlateColor", "PlateColor")
-    plate_type = dig(ev, "TrafficCar.PlateType", "Object.PlateType", "PlateType")
+    plate_color = dig(
+        ev,
+        "TrafficCar.PlateColor",
+        "Object.PlateColor",
+        "PlateColor",
+        "NonMotor.PlateColor",
+        "NonMotor.Object.PlateColor",
+    )
+    plate_type = dig(ev, "TrafficCar.PlateType", "Object.PlateType", "PlateType", "NonMotor.PlateType")
     front_plate = dig(ev, "FrontPlateNumber", "TrafficCar.FrontPlateNumber", "Object.FrontPlateNumber")
     back_plate = dig(ev, "BackPlateNumber", "TrafficCar.BackPlateNumber", "Object.BackPlateNumber")
     front_plate_color = dig(ev, "FrontPlateColor", "TrafficCar.FrontPlateColor")
@@ -133,7 +144,7 @@ def extract_detection(event: MultipartEvent) -> dict[str, Any]:
     unlicensed = False
     if plate is None or plate_norm is None or str(plate).strip() in ("", "unknown", "Unknown", "-"):
         if code and ("Traffic" in str(code) or "Junction" in str(code) or "Measurement" in str(code)):
-            if dig(ev, "Vehicle", "TrafficCar", "Object") is not None:
+            if dig(ev, "Vehicle", "TrafficCar", "Object", "NonMotor") is not None:
                 unlicensed = plate_norm is None
 
     speed_limit = dig(ev, "SpeedLimit")
@@ -199,8 +210,21 @@ def extract_detection(event: MultipartEvent) -> dict[str, Any]:
         "sun_shade": sun_shade,
         "country": dig(ev, "Object.Country", "Country", "TrafficCar.Country"),
         "rec_no": dig(ev, "TrafficCar.RecNo", "RecNo", "EventID"),
-        "plate_bbox": _bbox(ev, "Object.BoundingBox", "TrafficCar.BoundingBox"),
-        "vehicle_bbox": _bbox(ev, "Vehicle.BoundingBox"),
+        "plate_bbox": _bbox(
+            ev,
+            "Object.BoundingBox",
+            "TrafficCar.BoundingBox",
+            "NonMotor.Object.BoundingBox",
+            "NonMotor.Plate.BoundingBox",
+            "Plate.BoundingBox",
+        ),
+        "vehicle_bbox": _bbox(
+            ev,
+            "Vehicle.BoundingBox",
+            "NonMotor.BoundingBox",
+            "NonMotor.Object.BoundingBox",
+            "Object.BoundingBox",
+        ),
         "speed_limit": speed_limit,
         "speed_limit_norm": speed_limit_norm,
         "over_speeding_pct": _as_float(over_pct),

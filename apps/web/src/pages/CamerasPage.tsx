@@ -277,10 +277,10 @@ function CameraCard({
             {c.enabled ? "Tắt thu sự kiện" : "Bật thu sự kiện"}
           </button>
           <Link
-            to={`/monitor?camera=${c.id}`}
+            to={`/?camera=${c.id}`}
             className="text-xs border border-accent/40 text-accent rounded-lg px-2.5 py-1.5 hover:bg-accent/10"
           >
-            Quan sát / kẻ vạch
+            Trực tiếp / kẻ vạch
           </Link>
           <button
             type="button"

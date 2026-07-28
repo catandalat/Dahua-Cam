@@ -211,8 +211,8 @@ def _extract_images(data: dict[str, Any], binary: bytes) -> list[ImagePart]:
         )
 
     # Fallback: whole binary is one image
-    if not images and binary and binary[:3] in (b"\xff\xd8\xff",) or (
-        binary and binary[:4] == b"\x89PNG"
+    if not images and binary and (
+        binary[:3] == b"\xff\xd8\xff" or binary[:4] == b"\x89PNG"
     ):
         images.append(ImagePart(kind="scene", offset=0, length=len(binary), data=binary))
 
