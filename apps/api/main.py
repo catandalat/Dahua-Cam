@@ -62,9 +62,12 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(title="Dahua ANPR Operations", version="0.1.0", lifespan=lifespan)
 settings = get_settings()
+# LAN UIs (http://192.168.x.x:5173) need either an explicit origin or a regex —
+# mixing allow_origins=["*"] with allow_credentials=True is unreliable.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_origin_list + ["*"],
+    allow_origins=settings.cors_origin_list,
+    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1|192\.168\.\d{1,3}\.\d{1,3}|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[0-1])\.\d{1,3}\.\d{1,3})(:\d+)?$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

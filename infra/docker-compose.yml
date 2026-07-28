@@ -38,7 +38,7 @@ services:
       DATABASE_URL_SYNC: postgresql://anpr:anpr@postgres:5432/anpr
       REDIS_URL: redis://redis:6379/0
       SNAPSHOT_DIR: /data/snapshots
-      CORS_ORIGINS: http://localhost:5173,http://localhost:3000,http://web
+      CORS_ORIGINS: http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173,http://web
     ports:
       - "8000:8000"
     volumes:
@@ -81,8 +81,10 @@ services:
       - "5173:5173"
     environment:
       TZ: Asia/Ho_Chi_Minh
-      VITE_API_URL: http://localhost:8000
-      VITE_WS_URL: ws://localhost:8000/ws/live
+      # Same-origin via Vite proxy (see vite.config.ts) — works on LAN IP without CORS pain
+      VITE_API_URL: /api
+      VITE_WS_URL: ""
+      VITE_PROXY_TARGET: http://api:8000
     volumes:
       - ../apps/web:/app
       - /app/node_modules

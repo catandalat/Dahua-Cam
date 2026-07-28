@@ -1,5 +1,55 @@
-const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
-export const WS_URL = import.meta.env.VITE_WS_URL || "ws://localhost:8000/ws/live";
+/** Prefer same-origin `/api` (Vite proxy) so LAN IP access never hits CORS.
+ * Fall back to host:8000 when opened via private IP without a proxy, or
+ * localhost defaults for direct API access. */
+function resolveApiUrl(): string {
+  const configured = (import.meta.env.VITE_API_URL || "").trim();
+  if (configured === "/api" || configured.endsWith("/api")) {
+    return configured.replace(/\/$/, "") || "/api";
+  }
+  if (configured && !/localhost|127\.0\.0\.1/i.test(configured)) {
+    // Explicit non-local URL (production) — only use when page is not on LAN IP
+    if (typeof window !== "undefined") {
+      const h = window.location.hostname;
+      const onLan =
+        /^192\.168\./.test(h) ||
+        /^10\./.test(h) ||
+        /^172\.(1[6-9]|2\d|3[0-1])\./.test(h);
+      if (onLan) return "/api";
+    }
+    return configured;
+  }
+  if (typeof window !== "undefined") {
+    const h = window.location.hostname;
+    if (h && h !== "localhost" && h !== "127.0.0.1") {
+      // Prefer proxy path (same origin); works when Vite proxy is configured
+      return "/api";
+    }
+  }
+  return configured || "http://localhost:8000";
+}
+
+function resolveWsUrl(): string {
+  const configured = (import.meta.env.VITE_WS_URL || "").trim();
+  if (typeof window !== "undefined") {
+    const h = window.location.hostname;
+    const onLan =
+      !!h &&
+      h !== "localhost" &&
+      h !== "127.0.0.1" &&
+      (/^192\.168\./.test(h) ||
+        /^10\./.test(h) ||
+        /^172\.(1[6-9]|2\d|3[0-1])\./.test(h));
+    if (onLan || !configured || /localhost|127\.0\.0\.1/i.test(configured)) {
+      const proto = window.location.protocol === "https:" ? "wss" : "ws";
+      // Same-origin WS via Vite proxy (/ws → api)
+      return `${proto}://${window.location.host}/ws/live`;
+    }
+  }
+  return configured || "ws://localhost:8000/ws/live";
+}
+
+const API_URL = resolveApiUrl();
+export const WS_URL = resolveWsUrl();
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API_URL}${path}`, {
