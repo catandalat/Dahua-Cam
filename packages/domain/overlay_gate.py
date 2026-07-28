@@ -1,4 +1,11 @@
-"""Gate detections by camera overlay shapes (Dahua 0–8192 coordinates)."""
+"""Gate detections by camera overlay shapes (Dahua 0–8192 coordinates).
+
+Preferred design: draw a detection *region* — only keep when the plate (or bike
+body) is inside that polygon. Clearer and less noisy than line-distance.
+
+Fallback: if no region is drawn, keep passages near / just past the lane line.
+Do NOT let giant vehicle body boxes invent hits for cars without a plate.
+"""
 
 from __future__ import annotations
 
@@ -9,20 +16,17 @@ from typing import Any, Sequence
 Point = tuple[float, float]
 BBox = Sequence[float]  # [x1, y1, x2, y2]
 
-# Plate must be close to the painted line on the approach side.
-# Evidence: clothing false-OCR 57R6409 was ~1418px away (tall plate); real on-line ~10–680px.
-DEFAULT_LINE_THRESHOLD = 1000.0
-MOTORCYCLE_LINE_THRESHOLD = 1200.0
-# Wide (car) plates often OCR via ManualSnap while still approaching — allow earlier.
-# Evidence: 92G15255 dist≈1576 pconf=70; 49A81434 dist≈1855 — both rejected under 1000.
-APPROACH_CAR_LINE_THRESHOLD = 2000.0
-# Body-only / unread plate: must be close to the line (mid-frame people ~1100px out).
-NOPLATE_LINE_THRESHOLD = 900.0
-# After the vehicle has crossed, late snaps can sit further past the line (e.g. 49B02391).
-PAST_LINE_THRESHOLD = 2800.0
-# Inbound motorcycles OCR via ManualSnap while still approaching (tall plate).
-# Clothing false OCR (57R6409) was 7-char car-shaped + tall — not moto pattern.
-APPROACH_MOTO_LINE_THRESHOLD = 2000.0
+# Cars must be near the painted line (real on-line snaps were ~10–700px).
+DEFAULT_LINE_THRESHOLD = 800.0
+# Wide car plate — same strict corridor (do not allow 2000px early OCR).
+APPROACH_CAR_LINE_THRESHOLD = 800.0
+# Motorcycles: slightly wider; still far tighter than the old 2000/4000.
+MOTORCYCLE_LINE_THRESHOLD = 1000.0
+APPROACH_MOTO_LINE_THRESHOLD = 1200.0
+# Body-only (no plate): only motorcycle/unlicensed very close to the line.
+NOPLATE_LINE_THRESHOLD = 500.0
+# Late snap after the vehicle has already crossed (past side of the line).
+PAST_LINE_THRESHOLD = 2200.0
 
 
 def bbox_center(bbox: BBox | None) -> Point | None:
@@ -33,6 +37,67 @@ def bbox_center(bbox: BBox | None) -> Point | None:
     except (TypeError, ValueError):
         return None
     return ((x1 + x2) / 2.0, (y1 + y2) / 2.0)
+
+
+def bbox_bottom_center(bbox: BBox | None) -> Point | None:
+    if not bbox or len(bbox) < 4:
+        return None
+    try:
+        x1, y1, x2, y2 = (float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3]))
+    except (TypeError, ValueError):
+        return None
+    return ((x1 + x2) / 2.0, max(y1, y2))
+
+
+def region_to_detect_quad(points: Sequence[Sequence[float]]) -> list[list[int]]:
+    """Axis-aligned quad for Dahua DetectRegion (exactly 4 corners, 0–8191)."""
+    xs: list[float] = []
+    ys: list[float] = []
+    for p in points:
+        if isinstance(p, (list, tuple)) and len(p) >= 2:
+            try:
+                xs.append(float(p[0]))
+                ys.append(float(p[1]))
+            except (TypeError, ValueError):
+                continue
+    if len(xs) < 3:
+        return [[0, 4600], [8191, 4600], [8191, 8191], [0, 8191]]
+    x1 = max(0, min(8191, int(min(xs))))
+    y1 = max(0, min(8191, int(min(ys))))
+    x2 = max(0, min(8191, int(max(xs))))
+    y2 = max(0, min(8191, int(max(ys))))
+    if x2 <= x1:
+        x2 = min(8191, x1 + 1)
+    if y2 <= y1:
+        y2 = min(8191, y1 + 1)
+    return [[x1, y1], [x2, y1], [x2, y2], [x1, y2]]
+
+
+def first_overlay_region_points(shapes: list[dict[str, Any]] | None) -> list[list[float]] | None:
+    if not shapes:
+        return None
+    for s in shapes:
+        if s.get("type") != "region":
+            continue
+        pts = _shape_points(s)
+        if len(pts) >= 3:
+            return pts
+    return None
+
+
+def is_valid_bbox(bbox: BBox | None) -> bool:
+    """Reject missing / degenerate boxes like [0,0,0,0]."""
+    if not bbox or len(bbox) < 4:
+        return False
+    try:
+        vals = [float(bbox[i]) for i in range(4)]
+    except (TypeError, ValueError):
+        return False
+    if all(abs(v) < 1.0 for v in vals):
+        return False
+    w = abs(vals[2] - vals[0])
+    h = abs(vals[3] - vals[1])
+    return w >= 8 and h >= 8
 
 
 def _bbox_sample_points(bbox: BBox) -> list[Point]:
@@ -98,15 +163,10 @@ def _shape_points(shape: dict[str, Any]) -> list[list[float]]:
 
 
 def min_dist_to_line(bbox: BBox | None, ax: float, ay: float, bx: float, by: float) -> float | None:
-    if not bbox or len(bbox) < 4:
+    if not is_valid_bbox(bbox):
         return None
-    dists = [_dist_point_to_segment(px, py, ax, ay, bx, by) for px, py in _bbox_sample_points(bbox)]
+    dists = [_dist_point_to_segment(px, py, ax, ay, bx, by) for px, py in _bbox_sample_points(bbox)]  # type: ignore[arg-type]
     return min(dists) if dists else None
-
-
-def _bbox_near_line(bbox: BBox | None, ax: float, ay: float, bx: float, by: float, threshold: float) -> bool:
-    d = min_dist_to_line(bbox, ax, ay, bx, by)
-    return d is not None and d <= threshold
 
 
 def _bbox_hits_line_segment(
@@ -120,9 +180,9 @@ def _bbox_hits_line_segment(
     past_threshold: float,
 ) -> bool:
     """Keep if near the line, or already past it (late snap after crossing)."""
-    if not bbox or len(bbox) < 4:
+    if not is_valid_bbox(bbox):
         return False
-    for px, py in _bbox_sample_points(bbox):
+    for px, py in _bbox_sample_points(bbox):  # type: ignore[arg-type]
         dist = _dist_point_to_segment(px, py, ax, ay, bx, by)
         if dist <= near_threshold:
             return True
@@ -132,16 +192,57 @@ def _bbox_hits_line_segment(
 
 
 def _plate_aspect_hw(plate_bbox: BBox | None) -> float | None:
-    if not plate_bbox or len(plate_bbox) < 4:
+    if not is_valid_bbox(plate_bbox):
         return None
     try:
-        w = abs(float(plate_bbox[2]) - float(plate_bbox[0]))
-        h = abs(float(plate_bbox[3]) - float(plate_bbox[1]))
+        w = abs(float(plate_bbox[2]) - float(plate_bbox[0]))  # type: ignore[index]
+        h = abs(float(plate_bbox[3]) - float(plate_bbox[1]))  # type: ignore[index]
     except (TypeError, ValueError):
         return None
     if w < 1:
         return None
     return h / w
+
+
+def _gate_probe_points(
+    *,
+    plate_bbox: BBox | None,
+    vehicle_bbox: BBox | None,
+    is_bike: bool,
+    region_mode: bool,
+) -> list[Point]:
+    """Points used to decide in-region / near-line.
+
+    Region mode: plate center (+ bottom-center); bike without plate uses body
+    center/bottom only. Avoids giant body corners poking into the polygon.
+    """
+    pb = plate_bbox if is_valid_bbox(plate_bbox) else None
+    vb = vehicle_bbox if is_valid_bbox(vehicle_bbox) else None
+    if region_mode:
+        if pb is not None:
+            pts: list[Point] = []
+            c = bbox_center(pb)
+            b = bbox_bottom_center(pb)
+            if c:
+                pts.append(c)
+            if b and b != c:
+                pts.append(b)
+            return pts
+        if is_bike and vb is not None:
+            pts = []
+            c = bbox_center(vb)
+            b = bbox_bottom_center(vb)
+            if c:
+                pts.append(c)
+            if b and b != c:
+                pts.append(b)
+            return pts
+        return []
+    if pb is not None:
+        return _bbox_sample_points(pb)
+    if is_bike and vb is not None:
+        return _bbox_sample_points(vb)
+    return []
 
 
 def detection_hits_overlay(
@@ -156,44 +257,20 @@ def detection_hits_overlay(
     """
     Return True if detection should be kept given overlay shapes.
 
-    Rules (when overlay has shapes):
-    - region: keep if vehicle/plate sample point is inside any region
-    - lane_line / stop_line: when a plate bbox exists, gate on the plate only
-      (giant person/vehicle boxes must not pull mid-frame OCR across the line)
-    - VN motorcycle plate pattern: wider approach threshold (inbound ManualSnap)
-    - tall non-moto plates (clothing OCR): strict near-line threshold
-    - wide car plates: wider approach threshold
-    - past side allows late snaps
+    Design rules:
+    - If a region exists → ONLY region containment (line distance ignored).
+    - With a valid plate bbox → gate on the plate (never the giant vehicle box).
+    - Cars without a plate → reject.
+    - Motorcycles without a plate → body center/bottom only (region) or near line.
+    - No region: near / past-line late snaps still accepted.
     """
     if not shapes:
         return True
 
-    if line_threshold is None:
-        from domain.plate import is_valid_vn_plate, is_vn_motorcycle_plate, normalize_plate
-
-        vc = (vehicle_class or "").lower()
-        aspect = _plate_aspect_hw(plate_bbox)
-        plen = len(normalize_plate(plate_number) or "")
-        if plate_number and is_vn_motorcycle_plate(plate_number, plate_bbox=plate_bbox):
-            # VN moto OCR (9-char or tall 8-char) — often ManualSnap before the line
-            line_threshold = APPROACH_MOTO_LINE_THRESHOLD
-        elif (
-            aspect is not None
-            and aspect >= 1.05
-            and plate_number
-            and is_valid_vn_plate(plate_number)
-            and plen >= 8
-        ):
-            line_threshold = APPROACH_MOTO_LINE_THRESHOLD
-        elif aspect is not None and aspect < 1.0:
-            line_threshold = APPROACH_CAR_LINE_THRESHOLD
-        elif vc in ("motorcycle", "nonmotor", "bike") or (aspect is not None and aspect >= 1.05):
-            # Tall plate without moto number shape — keep strict (shirt OCR ~1418)
-            line_threshold = MOTORCYCLE_LINE_THRESHOLD
-        elif not plate_bbox:
-            line_threshold = NOPLATE_LINE_THRESHOLD
-        else:
-            line_threshold = DEFAULT_LINE_THRESHOLD
+    vc = (vehicle_class or "").lower()
+    is_bike = vc in ("motorcycle", "nonmotor", "bike")
+    pb = plate_bbox if is_valid_bbox(plate_bbox) else None
+    vb = vehicle_bbox if is_valid_bbox(vehicle_bbox) else None
 
     regions = [s for s in shapes if s.get("type") == "region" and len(_shape_points(s)) >= 3]
     lines = [
@@ -204,21 +281,48 @@ def detection_hits_overlay(
     if not regions and not lines:
         return True
 
-    # Prefer plate geometry when OCR claims a plate — clothing false-reads sit
-    # on the torso while a huge Vehicle box can still touch the lane line.
-    if plate_bbox and len(plate_bbox) >= 4:
-        boxes = [plate_bbox]
-    else:
-        boxes = [b for b in (vehicle_bbox, plate_bbox) if b and len(b) >= 4]
-    if not boxes:
-        return False
-
-    for reg in regions:
-        poly = _shape_points(reg)
-        for box in boxes:
-            for px, py in _bbox_sample_points(box):
+    # Region-first: drawn zone is the sole app-side gate when present.
+    if regions:
+        probes = _gate_probe_points(
+            plate_bbox=pb, vehicle_bbox=vb, is_bike=is_bike, region_mode=True
+        )
+        if not probes:
+            return False
+        for reg in regions:
+            poly = _shape_points(reg)
+            for px, py in probes:
                 if _point_in_polygon(px, py, poly):
                     return True
+        return False
+
+    if line_threshold is None:
+        from domain.plate import is_valid_vn_plate, is_vn_motorcycle_plate, normalize_plate
+
+        aspect = _plate_aspect_hw(pb)
+        plen = len(normalize_plate(plate_number) or "")
+        if plate_number and is_vn_motorcycle_plate(plate_number, plate_bbox=pb):
+            line_threshold = APPROACH_MOTO_LINE_THRESHOLD
+        elif (
+            aspect is not None
+            and aspect >= 1.05
+            and plate_number
+            and is_valid_vn_plate(plate_number)
+            and plen >= 8
+        ):
+            line_threshold = APPROACH_MOTO_LINE_THRESHOLD
+        elif is_bike:
+            line_threshold = MOTORCYCLE_LINE_THRESHOLD if pb else NOPLATE_LINE_THRESHOLD
+        elif pb is None:
+            line_threshold = NOPLATE_LINE_THRESHOLD
+        else:
+            line_threshold = APPROACH_CAR_LINE_THRESHOLD
+
+    if pb is not None:
+        boxes = [pb]
+    elif is_bike and vb is not None:
+        boxes = [vb]
+    else:
+        return False
 
     for line in lines:
         pts = _shape_points(line)
@@ -266,8 +370,8 @@ PASSAGE_EVENT_CODES = {
     "TrafficCarMeasurement",
     "TrafficTollGate",
     "TrafficGate",
-    "TrafficVehiclePosition",  # some firmware emit motorcycle ANPR only here
-    "TrafficManualSnap",  # keep only when plate/body present (listener filters)
+    "TrafficVehiclePosition",
+    "TrafficManualSnap",
     "TrafficNonMotorInMotorRoute",
     "TrafficNonMotorHoldUmbrella",
     "TrafficNonMotorOverload",
@@ -289,5 +393,4 @@ def is_passage_event_code(code: str | None) -> bool:
     c = str(code).split(";")[0].strip()
     if c in PASSAGE_EVENT_CODES:
         return True
-    # Numbered variants e.g. TrafficJunction1
     return any(c.startswith(p) for p in PASSAGE_EVENT_CODES)

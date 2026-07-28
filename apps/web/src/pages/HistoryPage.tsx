@@ -7,9 +7,34 @@ type Tab = "detections" | "sessions";
 const CLASS_LABEL: Record<string, string> = {
   car: "Ô tô",
   motorcycle: "Xe máy",
+  truck: "Xe tải / bus",
   other: "Khác",
   unknown: "Chưa rõ",
 };
+
+const COLOR_LABEL_VI: Record<string, string> = {
+  white: "Trắng",
+  black: "Đen",
+  gray: "Xám",
+  grey: "Xám",
+  silver: "Bạc",
+  red: "Đỏ",
+  blue: "Xanh dương",
+  green: "Xanh lá",
+  yellow: "Vàng",
+  orange: "Cam",
+  brown: "Nâu",
+  purple: "Tím",
+  pink: "Hồng",
+};
+
+function colorLabelVi(raw?: string | null): string | null {
+  if (!raw) return null;
+  const s = String(raw).trim();
+  if (!s || s.toLowerCase() === "unknown") return null;
+  const key = s.toLowerCase().replace(/[\s_-]/g, "");
+  return COLOR_LABEL_VI[key] || s;
+}
 
 export default function HistoryPage() {
   const [tab, setTab] = useState<Tab>("detections");
@@ -138,7 +163,14 @@ function DetectionsList({ rows }: { rows: Detection[] }) {
                 {d.event_utc ? new Date(d.event_utc).toLocaleString("vi-VN") : "—"}
               </div>
               <div className="text-slate-500 text-xs mt-0.5">
-                {[d.vehicle_brand, d.vehicle_color, d.event_code].filter(Boolean).join(" · ") || "—"}
+                {[
+                  d.vehicle_brand,
+                  colorLabelVi(d.vehicle_color) ? `Xe ${colorLabelVi(d.vehicle_color)}` : null,
+                  colorLabelVi(d.plate_color) ? `Biển ${colorLabelVi(d.plate_color)}` : null,
+                  d.event_code,
+                ]
+                  .filter(Boolean)
+                  .join(" · ") || "—"}
               </div>
             </div>
           </article>
@@ -159,6 +191,8 @@ function DetectionsList({ rows }: { rows: Detection[] }) {
               <th className="px-3 py-2">Hướng</th>
               <th className="px-3 py-2">Thời gian</th>
               <th className="px-3 py-2">Xe</th>
+              <th className="px-3 py-2">Màu xe</th>
+              <th className="px-3 py-2">Màu biển</th>
               <th className="px-3 py-2">Sự kiện</th>
             </tr>
           </thead>
@@ -180,16 +214,18 @@ function DetectionsList({ rows }: { rows: Detection[] }) {
                   {d.event_utc ? new Date(d.event_utc).toLocaleString("vi-VN") : "—"}
                 </td>
                 <td className="px-3 py-2 text-slate-300">
-                  {[CLASS_LABEL[d.vehicle_class || ""] || d.vehicle_class, d.vehicle_brand, d.vehicle_color]
+                  {[CLASS_LABEL[d.vehicle_class || ""] || d.vehicle_class, d.vehicle_brand]
                     .filter(Boolean)
                     .join(" · ") || "—"}
                 </td>
+                <td className="px-3 py-2 text-slate-300">{colorLabelVi(d.vehicle_color) || "—"}</td>
+                <td className="px-3 py-2 text-slate-300">{colorLabelVi(d.plate_color) || "—"}</td>
                 <td className="px-3 py-2 text-slate-500 text-xs">{d.event_code || "—"}</td>
               </tr>
             ))}
             {!rows.length && (
               <tr>
-                <td colSpan={6} className="px-3 py-8 text-center text-slate-500">
+                <td colSpan={8} className="px-3 py-8 text-center text-slate-500">
                   Chưa có nhận diện được ghi
                 </td>
               </tr>

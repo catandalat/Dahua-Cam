@@ -332,11 +332,13 @@ class DahuaClient:
         *,
         bidirectional: bool = True,
         snap_motor: bool = True,
+        detect_region: list[list[int]] | list[tuple[int, int]] | None = None,
     ) -> str:
         """Push overlay lane into VideoAnalyseRule DetectLine (Dahua 0–8192).
 
         Bidirectional uses Obverse+Reverse. SnapMotor enables motorcycle body snaps.
         NoPlateConfirmFrame is lowered so unread-plate vehicles still emit events.
+        detect_region: optional 4-corner quad from app overlay region (AABB).
         """
         x1, y1 = int(point_a[0]), int(point_a[1])
         x2, y2 = int(point_b[0]), int(point_b[1])
@@ -361,7 +363,11 @@ class DahuaClient:
         # SnapMotor=1 is the supported motorcycle snap switch for TrafficTollGate.
         rule_res = await self.get_text("/cgi-bin/configManager.cgi", params)
         # Lane Type=Light-duty suppresses motorcycle events; Mix allows cars + bikes.
-        # Also widen DetectRegion and align global lane DetectLine with overlay.
+        # DetectRegion: prefer drawn overlay region AABB; else lower-half fallback.
+        if detect_region and len(detect_region) >= 4:
+            quad = [[int(p[0]), int(p[1])] for p in detect_region[:4]]
+        else:
+            quad = [[0, 4600], [8191, 4600], [8191, 8191], [0, 8191]]
         try:
             await self.get_text(
                 "/cgi-bin/configManager.cgi",
@@ -380,14 +386,14 @@ class DahuaClient:
                     "VideoAnalyseGlobal[0].Scene.Detail.Lanes[0].DetectLine[1][0]": str(x2),
                     "VideoAnalyseGlobal[0].Scene.Detail.Lanes[0].DetectLine[1][1]": str(y2),
                     "VideoAnalyseGlobal[0].Scene.Detail.DetectRegions[0].Enable": "true",
-                    "VideoAnalyseGlobal[0].Scene.Detail.DetectRegions[0].DetectRegion[0][0]": "0",
-                    "VideoAnalyseGlobal[0].Scene.Detail.DetectRegions[0].DetectRegion[0][1]": "4300",
-                    "VideoAnalyseGlobal[0].Scene.Detail.DetectRegions[0].DetectRegion[1][0]": "8191",
-                    "VideoAnalyseGlobal[0].Scene.Detail.DetectRegions[0].DetectRegion[1][1]": "4300",
-                    "VideoAnalyseGlobal[0].Scene.Detail.DetectRegions[0].DetectRegion[2][0]": "8191",
-                    "VideoAnalyseGlobal[0].Scene.Detail.DetectRegions[0].DetectRegion[2][1]": "8191",
-                    "VideoAnalyseGlobal[0].Scene.Detail.DetectRegions[0].DetectRegion[3][0]": "0",
-                    "VideoAnalyseGlobal[0].Scene.Detail.DetectRegions[0].DetectRegion[3][1]": "8191",
+                    "VideoAnalyseGlobal[0].Scene.Detail.DetectRegions[0].DetectRegion[0][0]": str(quad[0][0]),
+                    "VideoAnalyseGlobal[0].Scene.Detail.DetectRegions[0].DetectRegion[0][1]": str(quad[0][1]),
+                    "VideoAnalyseGlobal[0].Scene.Detail.DetectRegions[0].DetectRegion[1][0]": str(quad[1][0]),
+                    "VideoAnalyseGlobal[0].Scene.Detail.DetectRegions[0].DetectRegion[1][1]": str(quad[1][1]),
+                    "VideoAnalyseGlobal[0].Scene.Detail.DetectRegions[0].DetectRegion[2][0]": str(quad[2][0]),
+                    "VideoAnalyseGlobal[0].Scene.Detail.DetectRegions[0].DetectRegion[2][1]": str(quad[2][1]),
+                    "VideoAnalyseGlobal[0].Scene.Detail.DetectRegions[0].DetectRegion[3][0]": str(quad[3][0]),
+                    "VideoAnalyseGlobal[0].Scene.Detail.DetectRegions[0].DetectRegion[3][1]": str(quad[3][1]),
                 },
             )
         except Exception:

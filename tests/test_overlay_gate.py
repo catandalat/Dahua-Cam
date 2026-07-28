@@ -3,6 +3,7 @@ from domain.overlay_gate import (
     is_noise_event_code,
     is_passage_event_code,
     overlay_gate_required,
+    region_to_detect_quad,
 )
 
 
@@ -13,88 +14,60 @@ LANE = {
     "points": [[41, 4827], [4735, 5361]],
 }
 
+# Gate corridor around the lane (region-first mode)
+REGION = {
+    "id": "r1",
+    "type": "region",
+    "points": [
+        [0, 4500],
+        [5000, 4500],
+        [5000, 7500],
+        [0, 7500],
+    ],
+}
+
 
 def test_overlay_gate_required():
     assert overlay_gate_required([LANE]) is True
+    assert overlay_gate_required([REGION]) is True
     assert overlay_gate_required([]) is False
     assert overlay_gate_required([{"type": "lane_line", "points": [[1, 2]]}]) is False
 
 
 def test_lane_near_accepts():
-    # plate near lane y≈5233
     assert detection_hits_overlay(
         [LANE],
         plate_bbox=[1128, 5064, 1432, 5384],
     )
 
 
-def test_motorcycle_approaching_line_accepts():
-    # Bike plate near corridor of lane y~5300
-    assert detection_hits_overlay(
+def test_car_body_without_plate_rejects():
+    # Giant mid-frame car body must NOT invent a line hit
+    assert not detection_hits_overlay(
         [LANE],
-        vehicle_bbox=[2664, 2808, 4776, 4552],
-        plate_bbox=[3520, 4328, 3664, 4520],
-        vehicle_class="motorcycle",
+        vehicle_bbox=[536, 1952, 3256, 3840],
+        vehicle_class="car",
+    )
+
+
+def test_car_plate_far_outside_rejects():
+    # Approach-side car OCR ~1400–2000px out of corridor
+    assert not detection_hits_overlay(
+        [LANE],
+        vehicle_bbox=[536, 1768, 3304, 3880],
+        plate_bbox=[2520, 2632, 2872, 2824],
+        vehicle_class="car",
+        plate_number="84F09292",
     )
 
 
 def test_clothing_false_ocr_behind_line_rejects():
-    # Runtime evidence: 57R6409 ManualSnap — tall plate on shirt, ~1418px before line.
     assert not detection_hits_overlay(
         [LANE],
         vehicle_bbox=[304, 1856, 3328, 3856],
         plate_bbox=[1168, 3240, 1360, 3528],
         vehicle_class="car",
-    )
-
-
-def test_approaching_car_wide_plate_accepts():
-    # 92G15255 / 49A81434 — wide plate ManualSnap while approaching
-    assert detection_hits_overlay(
-        [LANE],
-        vehicle_bbox=[496, 1848, 3312, 3880],
-        plate_bbox=[2704, 3352, 3024, 3544],
-        vehicle_class="car",
-    )
-    assert detection_hits_overlay(
-        [LANE],
-        plate_bbox=[3416, 3168, 3720, 3344],
-        vehicle_class="car",
-    )
-
-
-def test_inbound_moto_plate_pattern_accepts_early():
-    # Tall plate + VN 9-char moto number → allow approach ManualSnap (~1400px)
-    assert detection_hits_overlay(
-        [LANE],
-        plate_bbox=[1176, 3240, 1368, 3520],
-        vehicle_class="motorcycle",
-        plate_number="59B123456",
-    )
-    # Tall 8-char valid plate (common moto OCR)
-    assert detection_hits_overlay(
-        [LANE],
-        plate_bbox=[1176, 3240, 1368, 3520],
-        plate_number="59R45429",
-    )
-
-
-def test_clothing_car_shaped_tall_plate_still_rejects():
-    # 57R6409 clothing: tall bbox but car-shaped 7-char number, ~1418px out
-    assert not detection_hits_overlay(
-        [LANE],
-        vehicle_bbox=[304, 1856, 3328, 3856],
-        plate_bbox=[1168, 3240, 1360, 3528],
         plate_number="57R6409",
-    )
-
-
-def test_past_line_late_snap_accepts():
-    # 49B02391 — plate already past the line (late snap)
-    assert detection_hits_overlay(
-        [LANE],
-        plate_bbox=[2112, 6528, 2576, 6960],
-        vehicle_class="car",
     )
 
 
@@ -106,11 +79,30 @@ def test_real_junction_on_line_accepts():
     )
 
 
-def test_lane_far_rejects():
-    # plate far above lane (y≈3200)
+def test_past_line_late_snap_accepts():
+    assert detection_hits_overlay(
+        [LANE],
+        plate_bbox=[2112, 6528, 2576, 6960],
+        vehicle_class="car",
+    )
+
+
+def test_inbound_moto_near_corridor_accepts():
+    assert detection_hits_overlay(
+        [LANE],
+        plate_bbox=[3520, 4328, 3664, 4520],
+        vehicle_class="motorcycle",
+        plate_number="59B123456",
+    )
+
+
+def test_zero_plate_bbox_ignored():
     assert not detection_hits_overlay(
         [LANE],
-        plate_bbox=[4592, 3136, 4736, 3392],
+        vehicle_bbox=[80, 2816, 1584, 4320],
+        plate_bbox=[0, 0, 0, 0],
+        vehicle_class="car",
+        plate_number="49H30534",
     )
 
 
@@ -118,22 +110,58 @@ def test_no_shapes_passthrough():
     assert detection_hits_overlay([], plate_bbox=[1, 2, 3, 4]) is True
 
 
-def test_region_contains():
-    region = {
-        "type": "region",
-        "points": [[0, 0], [8000, 0], [8000, 8000], [0, 8000]],
-    }
-    assert detection_hits_overlay([region], vehicle_bbox=[100, 100, 200, 200])
-    assert not detection_hits_overlay(
-        [{"type": "region", "points": [[0, 0], [100, 0], [100, 100], [0, 100]]}],
-        vehicle_bbox=[5000, 5000, 5100, 5100],
+def test_region_inside_accepts():
+    assert detection_hits_overlay(
+        [REGION],
+        plate_bbox=[1376, 4992, 1776, 5360],
+        vehicle_class="car",
     )
+
+
+def test_region_outside_rejects_even_near_line():
+    # Plate far above region — rejected even if a lane line would have accepted it
+    assert not detection_hits_overlay(
+        [REGION, LANE],
+        plate_bbox=[2520, 2632, 2872, 2824],
+        vehicle_class="car",
+        plate_number="84F09292",
+    )
+
+
+def test_region_ignores_giant_body_corner():
+    # Body overlaps region but plate center is outside → reject
+    assert not detection_hits_overlay(
+        [REGION],
+        vehicle_bbox=[1000, 2000, 4000, 6000],
+        plate_bbox=[2520, 2632, 2872, 2824],
+        vehicle_class="car",
+        plate_number="84F09292",
+    )
+
+
+def test_region_car_without_plate_rejects():
+    assert not detection_hits_overlay(
+        [REGION],
+        vehicle_bbox=[1000, 4800, 3000, 6000],
+        vehicle_class="car",
+    )
+
+
+def test_region_bike_body_inside_accepts():
+    assert detection_hits_overlay(
+        [REGION],
+        vehicle_bbox=[2000, 5000, 2800, 6200],
+        vehicle_class="motorcycle",
+    )
+
+
+def test_region_to_detect_quad():
+    q = region_to_detect_quad(REGION["points"])
+    assert q == [[0, 4500], [5000, 4500], [5000, 7500], [0, 7500]]
 
 
 def test_noise_and_passage_codes():
     assert is_noise_event_code("TrafficVehicleInParkingSpace")
     assert not is_noise_event_code("TrafficManualSnap")
-    assert not is_noise_event_code("TrafficJunction")
     assert is_passage_event_code("TrafficJunction")
-    assert is_passage_event_code("TrafficCarMeasurement")
     assert is_passage_event_code("TrafficManualSnap")

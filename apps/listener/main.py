@@ -245,7 +245,7 @@ class CameraWorker:
                 pass
 
     async def _sync_camera_gate_rule(self, client: DahuaClient, cam: Camera) -> None:
-        """Align camera VideoAnalyseRule DetectLine with app overlay + direction_role."""
+        """Align camera DetectLine / DetectRegion with app overlay + direction_role."""
         try:
             async with SessionLocal() as db:
                 overlay = await db.scalar(
@@ -263,7 +263,17 @@ class CameraWorker:
                 ),
                 None,
             )
-            if not lane:
+            from domain.overlay_gate import first_overlay_region_points, region_to_detect_quad
+
+            region_pts = first_overlay_region_points(shapes)
+            detect_quad = region_to_detect_quad(region_pts) if region_pts else None
+
+            if not lane and detect_quad:
+                # Region-only overlay: use bottom edge of region AABB as DetectLine
+                lane_pts = [detect_quad[3], detect_quad[2]]  # BL → BR
+            elif lane:
+                lane_pts = lane["points"]
+            else:
                 role = str(cam.direction_role or "entry")
                 if role == "bidirectional":
                     await client.get_text(
@@ -276,23 +286,24 @@ class CameraWorker:
                         },
                     )
                     logger.info(
-                        "No lane_line for %s — pushed Direction=Both only (draw vạch trên Trực tiếp để khớp DetectLine)",
+                        "No lane/region for %s — pushed Direction=Both only (vẽ vùng/vạch trên Trực tiếp)",
                         cam.name,
                     )
                 else:
                     logger.info(
-                        "No lane_line overlay for %s — skip DetectLine sync (draw & save vạch trên Trực tiếp)",
+                        "No lane_line/region overlay for %s — skip DetectLine sync",
                         cam.name,
                     )
                 return
-            pts = lane["points"]
+
             role = str(cam.direction_role or "entry")
             bidirectional = role == "bidirectional"
             res = await client.sync_tollgate_detect_line(
-                pts[0],
-                pts[1],
+                lane_pts[0],
+                lane_pts[1],
                 bidirectional=bidirectional,
                 snap_motor=True,
+                detect_region=detect_quad,
             )
             # Entry-only / exit-only cameras still need a single Direction on device
             if not bidirectional:
@@ -306,10 +317,11 @@ class CameraWorker:
                     },
                 )
             logger.info(
-                "Synced DetectLine on %s role=%s bidirectional=%s → %s",
+                "Synced DetectLine on %s role=%s bidirectional=%s region=%s → %s",
                 cam.name,
                 role,
                 bidirectional,
+                bool(detect_quad and region_pts),
                 (res or "").strip(),
             )
             # #region agent log
@@ -320,7 +332,8 @@ class CameraWorker:
                 {
                     "role": role,
                     "bidirectional": bidirectional,
-                    "pts": [pts[0], pts[1]],
+                    "pts": [lane_pts[0], lane_pts[1]],
+                    "detect_region": detect_quad,
                     "result": (res or "").strip(),
                     "direction_mode": "Obverse+Reverse" if bidirectional else "single",
                     "lane_type": "Mix",
@@ -538,8 +551,9 @@ class CameraWorker:
                 _agent_log("H3", "listener._handle_event", "position_empty_skip", {"code": code_name})
                 # #endregion
                 return
-            # ManualSnap without plate: keep bike/NonMotor body; for other bodies
-            # defer to overlay (near-line unlicensed — inbound moto often has no OCR).
+            # ManualSnap without plate: keep only motorcycle/NonMotor body.
+            # Cars without plate must NOT be stored — giant body boxes falsely
+            # "touch" the lane while the vehicle is still outside the line.
             if code_name == "TrafficManualSnap" and not det.get("plate_number"):
                 is_bike = str(det.get("vehicle_class") or "").lower() in (
                     "motorcycle",
@@ -550,16 +564,25 @@ class CameraWorker:
                     if isinstance(event.first_event, dict)
                     else False
                 )
-                if is_bike:
+                if not is_bike:
+                    logger.info("Skip ManualSnap no-plate car cam=%s", cam.name)
                     # #region agent log
                     _agent_log(
-                        "H10",
+                        "H11",
                         "listener._handle_event",
-                        "manual_snap_bike_body",
+                        "manual_snap_noise_skip",
                         {"vb": det.get("vehicle_bbox"), "vclass": det.get("vehicle_class")},
                     )
                     # #endregion
-                # else: do not return — overlay NOPLATE threshold drops mid-frame noise
+                    return
+                # #region agent log
+                _agent_log(
+                    "H10",
+                    "listener._handle_event",
+                    "manual_snap_bike_body",
+                    {"vb": det.get("vehicle_bbox"), "vclass": det.get("vehicle_class")},
+                )
+                # #endregion
             # #region agent log
             _agent_log(
                 "H6",

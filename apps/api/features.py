@@ -802,19 +802,45 @@ async def put_overlay(
         db.add(row)
     await db.commit()
 
-    # Push lane_line to camera DetectLine + bidirectional (else exit vehicles never snap)
+    # Push lane_line / region to camera DetectLine + DetectRegion
     cam_sync: dict[str, Any] = {"pushed": False}
     lane = next((s for s in cleaned if s.get("type") == "lane_line" and len(s.get("points") or []) >= 2), None)
-    if lane and body.enabled:
+    from domain.overlay_gate import first_overlay_region_points, region_to_detect_quad
+
+    region_pts = first_overlay_region_points(cleaned)
+    detect_quad = region_to_detect_quad(region_pts) if region_pts else None
+    if not lane and detect_quad:
+        lane_pts = [detect_quad[3], detect_quad[2]]
+    elif lane:
+        lane_pts = lane["points"]
+    else:
+        lane_pts = None
+
+    if lane_pts and body.enabled:
         cam = await _cam(camera_id, db)
         client = DahuaClient(
             cam.host, cam.username, cam.password, port=cam.port, use_https=cam.use_https, timeout=12.0
         )
         try:
-            pts = lane["points"]
-            res = await client.sync_tollgate_detect_line(pts[0], pts[1], bidirectional=True, snap_motor=True)
-            cam_sync = {"pushed": True, "result": (res or "").strip(), "direction": "Obverse+Reverse"}
-            logger.info("Synced DetectLine+Obverse/Reverse on cam=%s → %s", cam.name, cam_sync["result"])
+            res = await client.sync_tollgate_detect_line(
+                lane_pts[0],
+                lane_pts[1],
+                bidirectional=True,
+                snap_motor=True,
+                detect_region=detect_quad,
+            )
+            cam_sync = {
+                "pushed": True,
+                "result": (res or "").strip(),
+                "direction": "Obverse+Reverse",
+                "detect_region": bool(detect_quad and region_pts),
+            }
+            logger.info(
+                "Synced DetectLine+region on cam=%s region=%s → %s",
+                cam.name,
+                cam_sync["detect_region"],
+                cam_sync["result"],
+            )
         except Exception as exc:
             cam_sync = {"pushed": False, "error": str(exc)}
             logger.warning("DetectLine sync failed cam=%s: %s", cam.name, exc)

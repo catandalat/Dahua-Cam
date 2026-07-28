@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 from dahua_client.kv_parser import dig
 from dahua_client.multipart import MultipartEvent
 from domain.plate import normalize_plate
+from domain.colors import resolve_vehicle_color
 from domain.schemas import EVENT_TO_VIOLATION, ViolationType
 from domain.vehicle_class import classify_vehicle, clean_camera_attr
 
@@ -161,12 +162,18 @@ def extract_detection(event: MultipartEvent) -> dict[str, Any]:
     if not category and snap_category:
         category = "MotorVehicle" if snap_category.lower() == "motor" else snap_category
 
-    color = clean_camera_attr(
+    color = resolve_vehicle_color(
         dig(ev, "Vehicle.VehicleColor", "TrafficCar.VehicleColor", "VehicleColor", "NonMotor.Color")
-        or vehicle.get("VehicleColor")
+        or vehicle.get("VehicleColor"),
+        rgb=dig(ev, "Vehicle.VehicleColorRGB", "VehicleColorRGB", "TrafficCar.VehicleColorRGB"),
+        main_color=dig(ev, "Vehicle.MainColor") or vehicle.get("MainColor"),
     )
-    color_rgb = dig(ev, "Vehicle.VehicleColorRGB", "VehicleColorRGB")
+    color_rgb = dig(ev, "Vehicle.VehicleColorRGB", "VehicleColorRGB", "Vehicle.MainColor") or vehicle.get(
+        "MainColor"
+    )
     plate_color = clean_camera_attr(plate_color)
+    # If body color missing, keep plate color available; do not overwrite vehicle_color
+    # with plate paint — UI shows both.
     speed = dig(
         ev,
         "Speed",
@@ -227,6 +234,12 @@ def extract_detection(event: MultipartEvent) -> dict[str, Any]:
         "NonMotor.Object.BoundingBox",
         "NonMotor.Plate.BoundingBox",
     )
+    vehicle_bbox_vals = _bbox(
+        ev,
+        "Vehicle.BoundingBox",
+        "NonMotor.BoundingBox",
+        "NonMotor.Object.BoundingBox",
+    )
     vehicle_class = classify_vehicle(
         category_s,
         event_code=str(code) if code else None,
@@ -237,13 +250,17 @@ def extract_detection(event: MultipartEvent) -> dict[str, Any]:
         plate_number=plate_norm,
         plate_bbox=plate_bbox_vals,
         plate_type=clean_camera_attr(plate_type),
+        vehicle_bbox=vehicle_bbox_vals,
     )
     if vehicle_class == "motorcycle":
         category_s = category_s or "Motorcycle"
+    elif vehicle_class == "truck":
+        category_s = category_s or vehicle_size or "Truck"
     elif (not category_s) and vehicle_class != "unknown":
         category_s = {
             "car": vehicle_size or "Car",
             "motorcycle": "Motorcycle",
+            "truck": "Truck",
             "other": "Other",
         }.get(vehicle_class, category_s)
 
@@ -286,7 +303,7 @@ def extract_detection(event: MultipartEvent) -> dict[str, Any]:
         "country": dig(ev, "Object.Country", "Country", "TrafficCar.Country"),
         "rec_no": dig(ev, "TrafficCar.RecNo", "RecNo", "EventID"),
         "plate_bbox": plate_bbox_vals,
-        "vehicle_bbox": _bbox(
+        "vehicle_bbox": vehicle_bbox_vals or _bbox(
             ev,
             "Vehicle.BoundingBox",
             "NonMotor.BoundingBox",

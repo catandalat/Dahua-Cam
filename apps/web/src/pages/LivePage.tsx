@@ -10,14 +10,16 @@ import {
 } from "../api";
 import { ZoomableImage } from "../components/ZoomableImage";
 
-type Tool = "lane_line" | "stop_line" | "region" | "select";
+type Tool = "region" | "lane_line" | "stop_line" | "select";
 
 const TOOL_LABEL: Record<Tool, string> = {
   select: "Chọn / sửa",
-  lane_line: "Vạch làn",
-  stop_line: "Vạch dừng",
   region: "Vùng phát hiện",
+  lane_line: "Vạch làn (sync camera)",
+  stop_line: "Vạch dừng",
 };
+
+const TOOL_ORDER: Tool[] = ["region", "lane_line", "stop_line", "select"];
 
 const SHAPE_COLOR: Record<string, string> = {
   lane_line: "#3d9cf0",
@@ -28,9 +30,37 @@ const SHAPE_COLOR: Record<string, string> = {
 const CLASS_LABEL: Record<string, string> = {
   car: "Ô tô",
   motorcycle: "Xe máy",
+  truck: "Xe tải / bus",
   other: "Khác",
   unknown: "Chưa rõ",
 };
+
+const COLOR_LABEL_VI: Record<string, string> = {
+  white: "Trắng",
+  black: "Đen",
+  gray: "Xám",
+  grey: "Xám",
+  silver: "Bạc",
+  red: "Đỏ",
+  blue: "Xanh dương",
+  green: "Xanh lá",
+  yellow: "Vàng",
+  orange: "Cam",
+  brown: "Nâu",
+  purple: "Tím",
+  pink: "Hồng",
+  cyan: "Xanh lơ",
+  gold: "Vàng kim",
+  beige: "Be",
+};
+
+function colorLabelVi(raw?: string | null): string | null {
+  if (!raw) return null;
+  const s = String(raw).trim();
+  if (!s || s.toLowerCase() === "unknown") return null;
+  const key = s.toLowerCase().replace(/[\s_-]/g, "");
+  return COLOR_LABEL_VI[key] || s;
+}
 
 type OverlayDet = {
   id: string;
@@ -487,11 +517,11 @@ export default function LivePage() {
               onClick={() => {
                 setDrawMode((v) => !v);
                 setDraftPts([]);
-                if (!drawMode) setTool("lane_line");
+                if (!drawMode) setTool("region");
                 else setTool("select");
               }}
             >
-              {drawMode ? "Đang kẻ vạch" : "Kẻ vạch"}
+              {drawMode ? "Đang vẽ vùng" : "Vẽ vùng / vạch"}
             </button>
           </div>
 
@@ -552,7 +582,7 @@ export default function LivePage() {
           {drawMode && (
             <div className="rounded-xl border border-line bg-panel/70 p-3 space-y-3">
               <div className="flex flex-wrap gap-2">
-                {(Object.keys(TOOL_LABEL) as Tool[]).map((t) => (
+                {TOOL_ORDER.map((t) => (
                   <button
                     key={t}
                     type="button"
@@ -599,7 +629,7 @@ export default function LivePage() {
                     onClick={save}
                     className="text-xs bg-accent/20 text-accent border border-accent/30 rounded-lg px-2.5 py-2"
                   >
-                    Lưu vạch
+                    Lưu overlay
                   </button>
                   <button
                     type="button"
@@ -611,8 +641,10 @@ export default function LivePage() {
                 </div>
               </div>
               <p className="text-xs text-slate-500">
-                Vạch làn / dừng: bấm 2 điểm. Vùng: nhiều điểm, nháy đúp kết thúc. Chỉ ghi nhận xe gần
-                vạch hoặc trong vùng đã lưu.
+                Nên vẽ <span className="text-emerald-400">Vùng phát hiện</span> bao quanh cổng:
+                chỉ xe/biển số nằm trong vùng mới được ghi — rõ hơn và đỡ lộn hơn so với khoảng
+                cách tới vạch. Vùng: nhiều điểm, nháy đúp kết thúc. Vạch làn (2 điểm) vẫn dùng để
+                sync DetectLine trên camera.
               </p>
               {shapes.length > 0 && (
                 <div className="flex flex-wrap gap-1.5">
@@ -743,26 +775,28 @@ export default function LivePage() {
                     </span>
                     {d.vehicle_class && (
                       <Badge
-                        color={d.vehicle_class === "motorcycle" ? "warn" : "accent"}
+                        color={
+                          d.vehicle_class === "motorcycle"
+                            ? "warn"
+                            : d.vehicle_class === "truck"
+                              ? "danger"
+                              : "accent"
+                        }
                         text={CLASS_LABEL[d.vehicle_class] || d.vehicle_class}
                       />
                     )}
-                    {d.vehicle_color &&
-                      String(d.vehicle_color).toLowerCase() !== "unknown" && (
-                        <Badge color="ok" text={String(d.vehicle_color)} />
-                      )}
-                    {!d.vehicle_color &&
-                      d.plate_color &&
-                      String(d.plate_color).toLowerCase() !== "unknown" && (
-                        <Badge color="ok" text={`Biển ${d.plate_color}`} />
-                      )}
+                    {colorLabelVi(d.vehicle_color) && (
+                      <Badge color="ok" text={`Xe ${colorLabelVi(d.vehicle_color)}`} />
+                    )}
+                    {colorLabelVi(d.plate_color) && (
+                      <Badge color="ok" text={`Biển ${colorLabelVi(d.plate_color)}`} />
+                    )}
                     {!d.vehicle_color &&
                       !d.plate_color &&
                       d.meta &&
                       typeof d.meta.plate_color === "string" &&
-                      d.meta.plate_color &&
-                      String(d.meta.plate_color).toLowerCase() !== "unknown" && (
-                        <Badge color="ok" text={`Biển ${d.meta.plate_color}`} />
+                      colorLabelVi(d.meta.plate_color) && (
+                        <Badge color="ok" text={`Biển ${colorLabelVi(String(d.meta.plate_color))}`} />
                       )}
                     {d.passage_direction && (
                       <Badge
